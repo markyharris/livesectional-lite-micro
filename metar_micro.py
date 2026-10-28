@@ -429,8 +429,9 @@ def _https_get_url(url, max_bytes, depth=0):
             sock = ssl.create_default_context().wrap_socket(
                 sock, server_hostname=host)
         try:
+            # No Accept header: the GitHub API answers 415 to
+            # 'application/octet-stream' on the contents listing.
             req = ("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
-                   "Accept: application/octet-stream\r\n"
                    "Accept-Encoding: identity\r\n"
                    "Connection: close\r\n\r\n"
                    % (path, host, USER_AGENT))
@@ -487,8 +488,12 @@ def _parse_listing(data):
     if data is None:
         return None
     try:
+        if isinstance(data, bytes):
+            data = data.decode()
         items = json.loads(data)
-    except ValueError:
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(items, list):
         return None
     out = {}
     for it in items:
@@ -1444,7 +1449,11 @@ async def _amain(layout, strip, wdt):
                 log("fetch failed; keeping previous frame")
             last_fetch = time.ticks_ms()
         if time.ticks_diff(now, last_update) >= UPDATE_CHECK_MS:
-            _check_update()
+            try:
+                _check_update()
+            except Exception as e:
+                # The updater must never disturb the map itself.
+                log("update check error: %s" % e)
             last_update = time.ticks_ms()
         if time.ticks_diff(now, last_ntp) > 24 * 3600 * 1000:
             last_ntp = now
