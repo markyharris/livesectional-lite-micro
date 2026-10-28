@@ -197,3 +197,7 @@ class MetarScanner:
                 "raw": m["raw"],
             }
         return out
+
+# Fire-drill marker (Oct 28, 2026): a deliberate no-op comment so the
+# board's GitHub update check has a changed file to find, download,
+# verify and install. Behavior is unchanged.
