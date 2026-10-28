@@ -12,8 +12,11 @@
 # Files on the board: boot.py, main.py, metar_micro.py, scanner.py,
 # airports, config.json. See README.md for flashing / wiring / setup.
 
+import binascii
 import gc
+import hashlib
 import json
+import os
 import socket
 import ssl
 import time
@@ -89,6 +92,19 @@ WIPE_SECONDS = 1.5
 BLANK_SECONDS = 0.5            # dark beat before the wipe, so updates show
 USER_AGENT = "metar-map-micro/1.0 (personal LED weather map)"
 
+# Self-update from GitHub (the board has no git; this is the file-based
+# equivalent of the Pi's pull-and-restart): the admin page checks the
+# repo hourly, and Update now downloads the code files below, verifies
+# each against the git blob SHA GitHub publishes for it, and reboots.
+# config.json and airports are never touched - they belong to the
+# board, not the repo.
+GITHUB_REPO = "markyharris/livesectional-lite-micro"
+UPDATE_FILES = ("boot.py", "main.py", "metar_micro.py", "scanner.py")
+UPDATE_CHECK_MS = 3600 * 1000         # hourly, plus once after boot
+UPDATE_TIMEOUT_S = 20
+MAX_API_BYTES = 32768                 # repo listing JSON
+MAX_CODE_BYTES = 131072               # one code file
+
 COLORS = {"VFR": (0, 255, 0), "MVFR": (0, 0, 255),
           "IFR": (255, 0, 0), "LIFR": (255, 0, 255)}
 OFF = (0, 0, 0)
@@ -134,6 +150,9 @@ DEFAULT_CONFIG = {
 
 STATE = {"metars": {}, "last_fetch": "never", "last_fetch_ts": 0,
          "reporting": 0, "total": 0}
+
+UPDATE_STATE = {"available": False, "files": 0, "failed": "",
+                "applying": False}
 
 # Set by the Reboot button: blank the strip immediately, then reset.
 FORCE_OFF = False
@@ -355,6 +374,162 @@ def fetch_metars(wanted, wdt=None):
             return None
         return res
     return None
+
+
+# ---------------------------------------------------------------------------
+# Self-update from GitHub (see the constants near the top)
+# ---------------------------------------------------------------------------
+def _blob_sha_bytes(data):
+    """git blob SHA-1 of a byte string: sha1 of 'blob <len>' + NUL +
+    content - the same hash GitHub lists for every file in a repo."""
+    h = hashlib.sha1()
+    h.update(b"blob " + str(len(data)).encode() + b"\x00")
+    h.update(data)
+    return binascii.hexlify(h.digest()).decode()
+
+
+def _file_blob_sha(path):
+    """Blob SHA of a file on the board, or None if it doesn't exist."""
+    try:
+        size = os.stat(path)[6]
+    except OSError:
+        return None
+    h = hashlib.sha1()
+    h.update(b"blob " + str(size).encode() + b"\x00")
+    try:
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(2048)
+                if not chunk:
+                    break
+                h.update(chunk)
+    except OSError:
+        return None
+    return binascii.hexlify(h.digest()).decode()
+
+
+def _https_get_url(url, max_bytes, depth=0):
+    """Small HTTPS GET for the update machinery: returns the body
+    bytes, or None on any failure. Follows up to 2 redirects. (The
+    METAR fetch has its own streaming path; this one serves the repo
+    listing and individual code files, which are small.)"""
+    if depth > 2 or not url.startswith("https://"):
+        return None
+    rest = url[len("https://"):]
+    host, _, p = rest.partition("/")
+    path = "/" + p
+    try:
+        addr = socket.getaddrinfo(host, 443, 0, socket.SOCK_STREAM)[0][-1]
+        sock = socket.socket()
+        sock.settimeout(UPDATE_TIMEOUT_S)
+        sock.connect(addr)
+        if hasattr(ssl, "wrap_socket"):
+            sock = ssl.wrap_socket(sock, server_hostname=host)
+        else:
+            sock = ssl.create_default_context().wrap_socket(
+                sock, server_hostname=host)
+        try:
+            req = ("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
+                   "Accept: application/octet-stream\r\n"
+                   "Accept-Encoding: identity\r\n"
+                   "Connection: close\r\n\r\n"
+                   % (path, host, USER_AGENT))
+            sock.write(req.encode())
+            head = bytearray()
+            while not head.endswith(b"\r\n\r\n"):
+                ch = sock.read(1)
+                if not ch:
+                    return None
+                head += ch
+                if len(head) > 8192:
+                    return None
+            lines = bytes(head).decode().split("\r\n")
+            status = int(lines[0].split(" ")[1])
+            headers = {}
+            for ln in lines[1:]:
+                if ":" in ln:
+                    k, v = ln.split(":", 1)
+                    headers[k.strip().lower()] = v.strip()
+            if status in (301, 302, 303, 307, 308):
+                return _https_get_url(headers.get("location", ""),
+                                      max_bytes, depth + 1)
+            if status != 200:
+                log("update GET %s -> HTTP %d" % (path, status))
+                return None
+            if "chunked" in headers.get("transfer-encoding", ""):
+                body = _ChunkedStream(sock)
+            else:
+                body = sock
+            out = bytearray()
+            buf = bytearray(2048)
+            while len(out) <= max_bytes:
+                n = body.readinto(buf)
+                if not n:
+                    break
+                out += buf[:n]
+            if len(out) > max_bytes:
+                log("update GET %s: body too large" % path)
+                return None
+            return bytes(out)
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+    except Exception as e:
+        log("update GET failed: %s" % e)
+        return None
+
+
+def _parse_listing(data):
+    """GitHub contents-listing JSON -> {name: {sha, download_url}}
+    for files only, or None if it doesn't parse."""
+    if data is None:
+        return None
+    try:
+        items = json.loads(data)
+    except ValueError:
+        return None
+    out = {}
+    for it in items:
+        if isinstance(it, dict) and it.get("type") == "file":
+            out[it.get("name", "")] = {
+                "sha": it.get("sha", ""),
+                "download_url": it.get("download_url") or ""}
+    return out
+
+
+def _fetch_repo_listing():
+    return _parse_listing(_https_get_url(
+        "https://api.github.com/repos/%s/contents/" % GITHUB_REPO,
+        MAX_API_BYTES))
+
+
+def _changed_files(listing):
+    """(name, info) pairs whose repo SHA differs from the board's."""
+    plan = []
+    for name in UPDATE_FILES:
+        info = listing.get(name)
+        if info and _file_blob_sha(name) != info["sha"]:
+            plan.append((name, info))
+    return plan
+
+
+def _check_update():
+    """Refresh UPDATE_STATE from GitHub. Quiet on network failure -
+    a board that's offline shows it on the map already; only available
+    updates and apply failures are surfaced on the page."""
+    listing = _fetch_repo_listing()
+    if listing is None:
+        return
+    plan = _changed_files(listing)
+    UPDATE_STATE["available"] = len(plan) > 0
+    UPDATE_STATE["files"] = len(plan)
+    if not plan:
+        UPDATE_STATE["failed"] = ""
+    log("update check: %s" % (
+        ("%d file(s) changed on GitHub" % len(plan)) if plan
+        else "code is current with GitHub"))
 
 
 # ---------------------------------------------------------------------------
@@ -626,7 +801,10 @@ def _status_dict(cfg):
             "stations_reporting": STATE["reporting"],
             "stations_total": STATE["total"],
             "counts": counts, "stations": stations,
-            "map_on": bool(cfg.get("map_on", True))}
+            "map_on": bool(cfg.get("map_on", True)),
+            "update_available": UPDATE_STATE["available"],
+            "update_files": UPDATE_STATE["files"],
+            "update_failed": UPDATE_STATE["failed"]}
 
 
 def _stations_html():
@@ -809,6 +987,13 @@ _PAGE_BODY = """
    <span title="IFR" style="color:#ff0000;font-size:1.6em;vertical-align:-0.12em">&#9679;</span> <span id="st-ifr">%%IFR%%</span>
    <span title="LIFR" style="color:#e600e6;font-size:1.6em;vertical-align:-0.12em">&#9679;</span> <span id="st-lifr">%%LIFR%%</span></p>
 <p>Board: <strong>ESP32-S3</strong>%%BOARD_IP%%</p>
+<div id="st-update" style="%%UPD_STYLE%%color:#8a6d00;background:#fff3cd;padding:0.4em 0.6em;border-radius:4px;margin-top:0.5em">
+<div id="st-upavail" style="%%UPAVAIL_STYLE%%">
+<p style="margin:0.2em 0">Update available: <strong id="st-upfiles">%%UPFILES%%</strong> file(s) changed on GitHub.</p>
+<form method="post" action="/update-apply" onsubmit="return confirm('Update now? The board will download the new code from GitHub and reboot.')"><p style="margin:0.2em 0"><button type="submit">Update now</button></p></form>
+</div>
+<p id="st-upfailed" style="color:#b00;margin:0.3em 0;%%UPFAILED_STYLE%%">%%UPFAILED%%</p>
+</div>
 </div>
 <form method="post" action="/toggle"><p><button type="submit">%%TOGGLE_LABEL%%</button></p></form>
 <form method="post" action="/reboot" onsubmit="return confirm('Reboot the board now?')"><p><button type="submit">Reboot board</button></p></form>
@@ -890,6 +1075,19 @@ _PAGE_SCRIPTS = """<script>
         setText("st-ifr", s.counts.IFR);
         setText("st-lifr", s.counts.LIFR);
         updateStations(s.stations);
+        var upd = document.getElementById("st-update");
+        if (upd) {
+          var av = document.getElementById("st-upavail");
+          var fl = document.getElementById("st-upfailed");
+          if (av) av.style.display = s.update_available ? "" : "none";
+          if (s.update_available) setText("st-upfiles", s.update_files);
+          if (fl) {
+            fl.style.display = s.update_failed ? "" : "none";
+            if (s.update_failed) fl.textContent = s.update_failed;
+          }
+          upd.style.display =
+            (s.update_available || s.update_failed) ? "" : "none";
+        }
       }).catch(function () { /* keep the values already on screen */ });
   }
   setInterval(updateStatus, 30000);
@@ -955,6 +1153,15 @@ def _render_page(cfg):
         "%%IFR%%": str(sd["counts"]["IFR"]),
         "%%LIFR%%": str(sd["counts"]["LIFR"]),
         "%%BOARD_IP%%": (" &middot; " + _esc(ip)) if ip else "",
+        "%%UPD_STYLE%%": "" if (UPDATE_STATE["available"]
+                                or UPDATE_STATE["failed"])
+                         else "display:none;",
+        "%%UPAVAIL_STYLE%%": "" if UPDATE_STATE["available"]
+                             else "display:none;",
+        "%%UPFILES%%": str(UPDATE_STATE["files"]),
+        "%%UPFAILED_STYLE%%": "" if UPDATE_STATE["failed"]
+                              else "display:none;",
+        "%%UPFAILED%%": _esc(UPDATE_STATE["failed"]),
         "%%STATIONS%%": _stations_html(),
         "%%MAP_NAME%%": _esc(name),
         "%%BRIGHTNESS%%": str(cfg["brightness"]),
@@ -987,6 +1194,72 @@ async def _reset_later():
         machine.reset()
     except ImportError:
         log("reboot requested (no machine module here; ignored)")
+
+
+async def _apply_update():
+    """Download the changed code files from GitHub, verify each
+    against its published blob SHA, swap them in (old copies kept as
+    .bak), and reboot. Any failure before the swap leaves the running
+    code untouched and records why in UPDATE_STATE."""
+    global FORCE_OFF
+    if UPDATE_STATE["applying"]:
+        return
+    UPDATE_STATE["applying"] = True
+    FORCE_OFF = True            # dark map while the code is in flight
+    staged = []
+    try:
+        listing = _fetch_repo_listing()
+        if listing is None:
+            raise Exception("could not reach GitHub")
+        plan = _changed_files(listing)
+        if not plan:
+            UPDATE_STATE["available"] = False
+            UPDATE_STATE["files"] = 0
+            UPDATE_STATE["failed"] = ""
+            FORCE_OFF = False
+            return
+        for name, info in plan:
+            data = _https_get_url(info["download_url"], MAX_CODE_BYTES)
+            if data is None:
+                raise Exception("download of %s failed" % name)
+            if _blob_sha_bytes(data) != info["sha"]:
+                raise Exception("verification failed for %s" % name)
+            with open(name + ".new", "wb") as f:
+                f.write(data)
+            staged.append(name)
+        for name in staged:
+            if _file_blob_sha(name) is not None:
+                try:
+                    os.remove(name + ".bak")
+                except OSError:
+                    pass
+                os.rename(name, name + ".bak")
+            try:
+                os.rename(name + ".new", name)
+            except OSError:
+                try:
+                    os.rename(name + ".bak", name)
+                except OSError:
+                    pass
+                raise Exception("could not install %s" % name)
+        UPDATE_STATE["available"] = False
+        UPDATE_STATE["files"] = 0
+        UPDATE_STATE["failed"] = ""
+        log("update applied (%s); rebooting" % ", ".join(staged))
+        await _reset_later()
+        FORCE_OFF = False       # only reached if the reset didn't fire
+    except Exception as e:
+        UPDATE_STATE["failed"] = ("The last update attempt failed: %s"
+                                  % e)
+        log("update failed: %s" % e)
+        FORCE_OFF = False
+        for name in staged:
+            try:
+                os.remove(name + ".new")
+            except OSError:
+                pass
+    finally:
+        UPDATE_STATE["applying"] = False
 
 
 async def _handle_client(reader, writer):
@@ -1034,6 +1307,18 @@ async def _handle_client(reader, writer):
                          b"</body></html>")
             await writer.drain()
             asyncio.create_task(_reset_later())
+            return
+        if method == "POST" and path == "/update-apply":
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
+                         b"<html><head><meta http-equiv=\"refresh\" "
+                         b"content=\"25;url=/\"></head>"
+                         b"<body style=\"font-family:sans-serif\">"
+                         b"<h2>Updating...</h2><p>The board is downloading "
+                         b"the new code from GitHub and will reboot. This "
+                         b"page reloads itself in 25 seconds.</p>"
+                         b"</body></html>")
+            await writer.drain()
+            asyncio.create_task(_apply_update())
             return
         if method == "POST" and path == "/toggle":
             cfg["map_on"] = not cfg.get("map_on", True)
@@ -1134,6 +1419,7 @@ async def _amain(layout, strip, wdt):
                  if p != "NULL" and not p.startswith("LGND"))
     STATE["total"] = len(wanted)
     last_fetch = time.ticks_add(time.ticks_ms(), -FETCH_INTERVAL_MS)
+    last_update = time.ticks_add(time.ticks_ms(), -UPDATE_CHECK_MS)
     last_ntp = time.ticks_ms()
     while True:
         cfg = load_config()
@@ -1157,6 +1443,9 @@ async def _amain(layout, strip, wdt):
             else:
                 log("fetch failed; keeping previous frame")
             last_fetch = time.ticks_ms()
+        if time.ticks_diff(now, last_update) >= UPDATE_CHECK_MS:
+            _check_update()
+            last_update = time.ticks_ms()
         if time.ticks_diff(now, last_ntp) > 24 * 3600 * 1000:
             last_ntp = now
             try:

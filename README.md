@@ -137,10 +137,14 @@ whole data path before wiring anything.
   timezone; there is no DST handling (a non-issue in Arizona).
 - Status lives in memory instead of a `status.json` file; the web page
   shows the same data and polls the same JSON at `/api/status`.
-- No git-based update checker or one-click update, and no Map Builder —
-  those stay Pi-only. Code updates here are file uploads (Thonny or
-  mpremote); the airports list, though, uploads from the web page just
-  like on the Pi.
+- No Map Builder — that stays Pi-only.
+- No git on the board, so updates work differently from the Pi's pull:
+  the admin page checks this repo hourly, and **Update now** downloads
+  the changed code files (`boot.py`, `main.py`, `metar_micro.py`,
+  `scanner.py`) over HTTPS, verifies each against the git blob SHA
+  GitHub publishes for it, swaps it in (old copy kept as `<file>.bak`)
+  and reboots. `config.json` and `airports` are never touched. The
+  airports list also uploads from the web page, just like on the Pi.
 
 ## Testing status
 
@@ -154,8 +158,12 @@ strips are wired RGB instead of the WS2812-standard GRB.
 
 The Oct 28, 2026 feature-parity port (tagged legends, silver no-data,
 category-first lightning, blank-then-wipe + Use Wipe, status box with
-30 s auto-refresh, Stations section, airports upload) is bench-tested
-under CPython — the scanner and frame logic are shared pure Python:
+30 s auto-refresh, Stations section, airports upload) and the GitHub
+self-update (hourly check, SHA-verified download-and-reboot; the blob
+SHA implementation is byte-checked against `git hash-object`, and the
+apply and corrupt-download paths are exercised end to end against the
+real repo listing) are bench-tested under CPython — the scanner and
+frame logic are shared pure Python:
 
 - 38 unit checks: the scanner against the live cache file (162
   stations, raw METAR text now included), compute_frame scenarios for
