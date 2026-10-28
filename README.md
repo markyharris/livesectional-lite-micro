@@ -1,10 +1,9 @@
-# LiveSectional Lite Micro
+# LS Lite Micro
 
 The microcontroller sibling of **LiveSectional Lite**: same map, same
 behavior, same data source — running on an ESP32-S3 under MicroPython
 instead of a Raspberry Pi. METARs only, one LED per airport, driven from
-a single bulk download. (The code and the board's admin page still call
-it "METAR Map Micro.")
+a single bulk download.
 
 ## How it works
 

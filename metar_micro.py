@@ -1,4 +1,4 @@
-# metar_micro.py - METAR Map Lite for MicroPython (ESP32 / ESP32-S3).
+# metar_micro.py - LS Lite Micro for MicroPython (ESP32 / ESP32-S3).
 #
 # Behavior mirrors the Raspberry Pi LiveSectional Lite, restructured
 # for a microcontroller: the AWC cache file is downloaded over HTTPS
@@ -714,46 +714,43 @@ _CAT_HEX = {"VFR": "#00b050", "MVFR": "#0066ff", "IFR": "#ff0000",
             "LIFR": "#e600e6"}
 
 # Tab icon: the Pi admin page's sectional-chart icon, with the
-# airport LED recolored from VFR green to IFR red, so the two
-# controllers' browser tabs are easy to tell apart.
-# 64x64 palette PNG, 1844 bytes.
+# airport LED recolored from VFR green to IFR red and enlarged
+# ~1.6x, so the two controllers' browser tabs are easy to tell
+# apart at a glance.
+# 64x64 palette PNG, 1832 bytes.
 FAVICON_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAADAFBMVEXs6tL28d3c483J"
-    "w6v59eKxvKivAAHSnq0iXZOt3LTP1My8yMlnl6PQca0UTJHh0L/A8cHg28K2GBlWd524"
-    "5rnBv6fOam8Zf3wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACRDMEgAAAB"
-    "AHRSTlP///////////////////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    "AAAAAAAAwt7xIwAAAuNJREFUeNqtmImWqyAMhllMAUFBsfb93/QGbK0sbtP7t2dqT81H"
-    "FgI4BDiUej6f/JqAPEldNKo5EydAGGq121wmpI/S7+QDGNieH8cAugIGxn4C7BHoZQCz"
-    "rEa4AQgu1PJ3GVAl3ALEINgvgEoabgJiEOwHQJmGu4AiDdEgndPHgDwNKaDmUQ4o0xAb"
-    "LL6rygHM5m0VcQuTXQFgEMKSredMGy+lN8Bq7R0ALJXtuk7YFQGyR2tjfC/hAgB/H6wV"
-    "yLChkwkzvVcuSuFlWxASAPkGGhgCv/ge3KSiJqekLAjfHGwyviKs6ZVTq6ZJ+u+NRRmL"
-    "2lkRxldCiXkcZ/xQDnpDhmRabKtQlGiQXgCaP6JmMXtMKGf7ZcwB0AMYeNs/HqNEoQvp"
-    "3EzmwWbw8MdIp8AE03kMhBc6gFm4BIjyBjOIDoyOTNGHl1HwLkQNUGRRGicUjj0T54IL"
-    "o1AT9HwHkO8GC2AKgFG4mIhRCAToGiBfyJr4iQDwr2j6WAFlCM/KWr4AvMQGeD1WzUo4"
-    "I9kpIFT3XUbMulzt0QE1SZN29SGglUgwSwmjfUgBMHY5BGJ6gzM4zORxNBDmsvSEXc8B"
-    "1sFjLwSGEGDE5EzP2SUAXSrZgpQgAN4AtIfi5j1AeGlNOBKmaXEBW8lordt03d4FNES3"
-    "GO9gMI8gsCdiJ7ZROihcIIsTTmtbctPqEAXeoQ32IJbDQ1ijtlM9woDwpnYq0G1D1z0B"
-    "h+TYn6KrnEB4DdAwTprPrvRdLG3HLwEoRfcbmm9rpOpC1YPQb1WA7Sw9B4ThdwCkE+cA"
-    "LH7TrFv5aQwZgDLNQhI/07ESwzGg1UsVCKmZxxgOAbr9nm/rx4EihgBIhz8Wz2PYeKD1"
-    "zrnmMAkfQJi7dHM+3lWehA9g6/4xoKsCdEsuAkQNsHTuppduAvLsH3rAu/0yJvvaHUBz"
-    "D2DP2/lIVpx4QMk9/XcA/QuA/grIH6eLhxR69HCOJxR+S/n/BeAfLu4jZhEgNj4AAAAA"
+    "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"
     "SUVORK5CYII=")
 
 _favicon_cache = None
@@ -963,6 +960,9 @@ _PAGE_HEAD = """<!DOCTYPE html><html><head><title>%%TITLE%%</title>
 body { font-family: sans-serif; max-width: 34em; margin: 1em auto; padding: 0 1em; }
 .status { background: #f0f0f0; padding: 0.8em 1em; border-radius: 6px; }
 .status p { margin: 0.35em 0; }
+details.section { margin: 0.2em 0; }
+summary { cursor: pointer; }
+.row { display: flex; gap: 1em; flex-wrap: wrap; }
 .sta-grid { display: flex; flex-wrap: wrap; gap: 0.4em 1.1em; margin-top: 0.6em; }
 .sta .dot { display: inline-block; width: 0.72em; height: 0.72em;
             border-radius: 50%; margin-right: 0.35em; vertical-align: -0.05em; }
@@ -987,7 +987,7 @@ body { font-family: sans-serif; max-width: 34em; margin: 1em auto; padding: 0 1e
 _PAGE_BODY = """
 <div style="display:flex;align-items:center;gap:0.6em;margin-bottom:0.8em">
 <img src="data:image/png;base64,%%FAVICON_B64%%" alt="" width="52" height="52" style="border-radius:8px">
-<h2 style="margin:0">METAR Map Micro%%HEADING_NAME%%</h2>
+<h2 style="margin:0">LS Lite Micro%%HEADING_NAME%%</h2>
 </div>
 <div class="status">
 <p>Map is <strong id="st-map">%%MAP_STATE%%</strong></p>
@@ -1008,17 +1008,17 @@ _PAGE_BODY = """
 <p id="st-upfailed" style="color:#b00;margin:0.3em 0;%%UPFAILED_STYLE%%">%%UPFAILED%%</p>
 </div>
 </div>
+<hr>
+<details class="section" id="sec-power">
+<summary style="margin-top:1em"><h2 style="display:inline;margin:0">Power</h2></summary>
+<div class="row">
 <form method="post" action="/toggle"><p><button type="submit">%%TOGGLE_LABEL%%</button></p></form>
 <form method="post" action="/reboot" onsubmit="return confirm('Reboot the board now?')"><p><button type="submit">Reboot board</button></p></form>
+</div>
+</details>
 <hr>
-<h3 style="margin-bottom:0.3em">Stations</h3>
-<p style="color:#555;margin:0.2em 0 0">Every airport on the map with its
-current flight-category color. Hover or tap an airport ID to see its
-raw METAR. The list refreshes along with the status box, every 30
-seconds.</p>
-%%STATIONS%%
-<hr>
-<h3 style="margin-bottom:0.3em">Settings</h3>
+<details class="section" id="sec-settings">
+<summary style="margin-top:1em"><h2 style="display:inline;margin:0">Settings</h2></summary>
 <form method="post" action="/save">
 <p>Map name (shown above, optional): <input name="map_name" value="%%MAP_NAME%%"></p>
 <p>Brightness (0-100%): <input name="brightness" type="number" min="0" max="100" value="%%BRIGHTNESS%%"></p>
@@ -1037,8 +1037,10 @@ Wi-Fi password: <input name="wifi_password" type="password" placeholder="(unchan
 <p><button type="submit">Save</button></p></form>
 <p style="color:#666">Display settings apply on the next cycle. Wi-Fi and
 GPIO changes apply after a reboot.</p>
+</details>
 <hr>
-<h3 style="margin-bottom:0.3em">Airports file</h3>
+<details class="section" id="sec-airports">
+<summary style="margin-top:1em"><h2 style="display:inline;margin:0">Airports file</h2></summary>
 <p style="color:#555;margin:0.2em 0 0">Replace the station list (one
 entry per line, in LED order - an original LiveSectional airports
 backup works as-is). The current list is kept as airports.bak, and
@@ -1046,10 +1048,20 @@ the board reboots to load the new list.</p>
 <form method="post" action="/upload-airports" enctype="multipart/form-data">
 <p><input type="file" name="airports_file" required>
 <button type="submit">Upload airports file</button></p></form>
+</details>
+<hr>
+<details class="section" id="sec-stations">
+<summary style="margin-top:1em"><h2 style="display:inline;margin:0">Stations</h2></summary>
+<p style="color:#555;margin:0.2em 0 0">Every airport on the map with its
+current flight-category color. Hover or tap an airport ID to see its
+raw METAR. The list refreshes along with the status box, every 30
+seconds.</p>
+%%STATIONS%%
+</details>
 <p style="color:#888;font-size:0.85em;margin-top:1.8em">Weather data:
 NOAA Aviation Weather Center, refreshed every 5 minutes. Displayed
 conditions are indicative only - not for navigation.</p>
-<p style="text-align:center;color:#888;font-size:0.85em">METAR Map Micro &middot; LED METAR map</p>
+<p style="text-align:center;color:#888;font-size:0.85em">LS Lite Micro &middot; LED METAR map</p>
 """
 
 _PAGE_SCRIPTS = """<script>
@@ -1124,6 +1136,21 @@ document.addEventListener("click", function () {
 });
 </script>
 <script>
+// Collapsible sections: remember which ones this browser left open,
+// so a page reload - every button here posts and reloads - doesn't
+// slam the section shut mid-task. (Same behavior as the Pi page.)
+document.querySelectorAll("details.section").forEach(function (d) {
+  try {
+    if (localStorage.getItem("lsl-open-" + d.id) === "1") d.open = true;
+  } catch (e) { /* storage unavailable - sections just start closed */ }
+  d.addEventListener("toggle", function () {
+    try {
+      localStorage.setItem("lsl-open-" + d.id, d.open ? "1" : "0");
+    } catch (e) {}
+  });
+});
+</script>
+<script>
 (function () {
   var box = document.getElementById("sta-filter");
   if (!box) return;
@@ -1151,7 +1178,7 @@ document.addEventListener("click", function () {
 def _render_page(cfg):
     sd = _status_dict(cfg)
     name = cfg.get("map_name", "") or ""
-    title = (name + " - " if name else "") + "METAR Map Micro"
+    title = (name + " - " if name else "") + "LS Lite Micro"
     ip = _board_ip()
     repl = {
         "%%FAVICON_B64%%": FAVICON_B64,
