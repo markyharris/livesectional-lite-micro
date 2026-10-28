@@ -6,8 +6,8 @@
 # (scanner.py), so the whole file is never held in RAM. METARs only,
 # one LED per airport position from the `airports` file; tagged
 # legends, silver no-data, category-first lightning, blank-then-wipe;
-# admin page with live status, a Stations list (raw METAR popups) and
-# an airports-file upload.
+# admin page with live status, a Stations list (raw METAR popups), an
+# airports-file upload, and a Map Builder like the Pi's.
 #
 # Files on the board: boot.py, main.py, metar_micro.py, scanner.py,
 # airports, config.json. See README.md for flashing / wiring / setup.
@@ -110,6 +110,7 @@ COLORS = {"VFR": (0, 255, 0), "MVFR": (0, 0, 255),
 OFF = (0, 0, 0)
 NO_DATA = (32, 32, 32)         # dim white ("silver") - station not reporting
 FLASH_COLOR = (255, 255, 0)    # bright yellow for lightning
+BUILDER_COLOR = (255, 255, 255)  # bright white, stands out from wx colors
 
 # Legend (LGND) LEDs, mirroring metar_lite: a legend position can name
 # its role in the airports file - LGND:VFR, LGND:NODATA, LGND:WIND,
@@ -153,6 +154,16 @@ STATE = {"metars": {}, "last_fetch": "never", "last_fetch_ts": 0,
 
 UPDATE_STATE = {"available": False, "files": 0, "failed": "",
                 "applying": False}
+
+# Map builder (mirrors the Pi page): light one LED, walk the string,
+# fix the entry there. State persists in builder.json, like Lite's.
+BUILDER = {"position": 0, "active": False, "error": ""}
+BUILDER_FILE = "builder.json"
+
+# The live airports list - the same list object the main loop renders
+# from, set by run(). Builder saves edit it in place, so a saved entry
+# shows on the map right away, with no reboot.
+_LIVE = {"entries": None}
 
 # Set by the Reboot button: blank the strip immediately, then reset.
 FORCE_OFF = False
@@ -549,7 +560,21 @@ def _check_update():
 # Frame rendering (mirrors metar_lite.compute_frame)
 # ---------------------------------------------------------------------------
 def compute_frame(layout, metars, cfg):
-    if FORCE_OFF or not cfg.get("map_on", True):
+    if FORCE_OFF:
+        # An update or reboot is in flight: every LED dark, no
+        # exceptions (the Pi's power-blank equivalent).
+        return [OFF] * len(layout), ["."] * len(layout)
+    if _builder_active(layout):
+        # Map builder: darken the whole string and light just the one
+        # position being edited, so the builder can see which airport
+        # on the physical map it is. Overrides the weather display and
+        # the map on/off switch; fetching continues underneath.
+        colors = [OFF] * len(layout)
+        symbols = ["."] * len(layout)
+        colors[BUILDER["position"]] = BUILDER_COLOR
+        symbols[BUILDER["position"]] = "B"
+        return colors, symbols
+    if not cfg.get("map_on", True):
         # Map switched off from the web page: every LED dark, legend
         # included. Data keeps fetching, so turning it back on is instant.
         return [OFF] * len(layout), ["."] * len(layout)
@@ -933,6 +958,52 @@ def _save_airports(entries):
         f.write("\n".join(entries) + "\n")
 
 
+def _clamp_builder(count):
+    if count:
+        BUILDER["position"] = max(0, min(count - 1,
+                                         BUILDER["position"]))
+    else:
+        BUILDER["position"] = 0
+
+
+def _load_builder(count):
+    """Restore the persisted builder state, clamped to the layout."""
+    try:
+        with open(BUILDER_FILE) as f:
+            saved = json.load(f)
+        BUILDER["position"] = int(saved.get("position", 0))
+        BUILDER["active"] = bool(saved.get("active", False))
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    _clamp_builder(count)
+
+
+def _save_builder():
+    try:
+        with open(BUILDER_FILE, "w") as f:
+            json.dump({"position": BUILDER["position"],
+                       "active": BUILDER["active"]}, f)
+    except OSError:
+        pass
+
+
+def _builder_active(layout):
+    """True when the builder light should be showing for this layout."""
+    return bool(BUILDER["active"]
+                and 0 <= BUILDER["position"] < len(layout))
+
+
+def _live_entries():
+    """The live airports entries (the list the main loop renders
+    from), or a fresh read of the file if the loop hasn't started."""
+    if _LIVE["entries"] is not None:
+        return _LIVE["entries"]
+    try:
+        return load_airports()
+    except OSError:
+        return []
+
+
 def _multipart_file(body, boundary, field):
     """Pull one file part's content out of a multipart/form-data body.
     Just enough parsing for a browser file-upload form."""
@@ -1008,6 +1079,58 @@ _PAGE_BODY = """
 <p id="st-upfailed" style="color:#b00;margin:0.3em 0;%%UPFAILED_STYLE%%">%%UPFAILED%%</p>
 </div>
 </div>
+<hr>
+<details class="section" id="sec-builder"%%BUILDER_OPEN%%>
+<summary style="margin-top:1em"><h2 style="display:inline;margin:0">Map Builder</h2></summary>
+<p style="color:#555;margin:0.2em 0 0">Light one LED on the string, look at
+  where it sits on the map, and type the airport that belongs there - no more
+  counting LEDs by hand. While the builder light is on, the weather display
+  pauses on that one LED (data keeps updating underneath).</p>
+%%BUILDER_ERROR%%
+<div class="status" style="margin-top:0.8em">
+<p>Builder light: <strong>%%BUILDER_STATE%%</strong></p>
+<p>Position: <strong>LED %%BUILDER_POS%%</strong>
+   (line %%BUILDER_LINE%% of %%BUILDER_COUNT%% in the airports file)</p>
+<p>Current entry: <strong>%%BUILDER_CURRENT%%</strong></p>
+%%BUILDER_NEIGHBORS%%
+</div>
+<form method="post" action="/builder">
+  <input type="hidden" name="builder_toggle" value="1">
+  <button type="submit" style="margin-top:0.5em">%%BUILDER_TOGGLE_LABEL%%</button>
+</form>
+<form method="post" action="/builder">
+  <p style="margin:0.6em 0 0"><label for="builder_pos">Go to LED</label>
+  <input type="number" id="builder_pos" name="builder_pos"
+         min="0" max="%%BUILDER_MAX%%" value="%%BUILDER_POS%%" size="6">
+  <button type="submit" name="builder_goto" value="1">Go</button></p>
+  <p style="margin:0.4em 0 0"><button type="submit" name="builder_step" value="-1">&larr; Previous</button>
+  <button type="submit" name="builder_step" value="1">Next &rarr;</button></p>
+  <p style="margin:0.2em 0 0;color:#555">Stepping or jumping lights the new LED automatically.</p>
+</form>
+<form method="post" action="/builder">
+  <p style="margin:0.6em 0 0"><label for="builder_id">Airport at LED %%BUILDER_POS%%</label>
+  <input type="text" id="builder_id" name="builder_id" value="%%BUILDER_CURRENT%%"
+         size="8" style="text-transform:uppercase" autocomplete="off">
+  <button type="submit" name="builder_save" value="1">Save airport</button></p>
+  <p style="margin:0.2em 0 0;color:#555">Station ID as it appears in the METAR
+     data (e.g. KFLG), or NULL for an unused position, LGND for a legend LED
+     (a tagged legend like LGND:WIND pins that LED's color - the buttons
+     below set those for you). Saving takes effect on the map right
+     away - no restart needed.</p>
+</form>
+<form method="post" action="/builder">
+  <p style="margin:0.6em 0 0;color:#555">Or make this LED a legend position
+     with a fixed color, so it always matches your printed legend:</p>
+  <p style="margin:0.2em 0 0"><button type="submit" name="builder_legend" value="VFR">VFR</button>
+  <button type="submit" name="builder_legend" value="MVFR">MVFR</button>
+  <button type="submit" name="builder_legend" value="IFR">IFR</button>
+  <button type="submit" name="builder_legend" value="LIFR">LIFR</button>
+  <button type="submit" name="builder_legend" value="NODATA">No data</button>
+  <button type="submit" name="builder_legend" value="WIND">Wind</button>
+  <button type="submit" name="builder_legend" value="TS">Storms</button>
+  <button type="submit" name="builder_legend" value="">Plain LGND</button></p>
+</form>
+</details>
 <hr>
 <details class="section" id="sec-power">
 <summary style="margin-top:1em"><h2 style="display:inline;margin:0">Power</h2></summary>
@@ -1175,11 +1298,29 @@ document.querySelectorAll("details.section").forEach(function (d) {
 </body></html>"""
 
 
+def _builder_neighbors(entries, pos):
+    """The orientation line in the builder section: the current
+    position with two neighbors on either side (Lite's window)."""
+    if not entries:
+        return ""
+    parts = []
+    for p in range(max(0, pos - 2), min(len(entries), pos + 3)):
+        parts.append("LED %d: %s" % (p, _esc(entries[p])))
+    return ('<p style="color:#555">' + " &middot; ".join(parts)
+            + "</p>")
+
+
 def _render_page(cfg):
     sd = _status_dict(cfg)
     name = cfg.get("map_name", "") or ""
     title = (name + " - " if name else "") + "LS Lite Micro"
     ip = _board_ip()
+    b_entries = _live_entries()
+    _clamp_builder(len(b_entries))
+    b_pos = BUILDER["position"]
+    b_current = b_entries[b_pos] if b_entries else "(no airports file)"
+    b_err = BUILDER["error"]
+    BUILDER["error"] = ""       # shown once, on this render
     repl = {
         "%%FAVICON_B64%%": FAVICON_B64,
         "%%HEADING_NAME%%": (" &mdash; " + _esc(name)) if name else "",
@@ -1202,6 +1343,20 @@ def _render_page(cfg):
         "%%UPFAILED_STYLE%%": "" if UPDATE_STATE["failed"]
                               else "display:none;",
         "%%UPFAILED%%": _esc(UPDATE_STATE["failed"]),
+        "%%BUILDER_OPEN%%": " open" if (BUILDER["active"] or b_err)
+                            else "",
+        "%%BUILDER_ERROR%%": ('<p style="color:#b00">%s</p>'
+                              % _esc(b_err)) if b_err else "",
+        "%%BUILDER_STATE%%": "ON" if BUILDER["active"] else "OFF",
+        "%%BUILDER_POS%%": str(b_pos),
+        "%%BUILDER_LINE%%": str(b_pos + 1),
+        "%%BUILDER_COUNT%%": str(len(b_entries)),
+        "%%BUILDER_MAX%%": str(max(0, len(b_entries) - 1)),
+        "%%BUILDER_CURRENT%%": _esc(b_current),
+        "%%BUILDER_NEIGHBORS%%": _builder_neighbors(b_entries, b_pos),
+        "%%BUILDER_TOGGLE_LABEL%%": "Turn builder light OFF"
+                                    if BUILDER["active"]
+                                    else "Light this LED",
         "%%STATIONS%%": _stations_html(),
         "%%MAP_NAME%%": _esc(name),
         "%%BRIGHTNESS%%": str(cfg["brightness"]),
@@ -1397,6 +1552,10 @@ async def _handle_client(reader, writer):
                 await writer.drain()
                 return
             _save_airports(entries)
+            if _LIVE["entries"] is not None:
+                _LIVE["entries"][:] = entries
+            BUILDER["position"] = 0  # the list changed - start at top
+            _save_builder()
             writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: "
                          b"text/html\r\n\r\n")
             writer.write(_notice(
@@ -1406,6 +1565,66 @@ async def _handle_client(reader, writer):
                 % len(entries)))
             await writer.drain()
             asyncio.create_task(_reset_later())
+            return
+        if method == "POST" and path == "/builder":
+            body = b""
+            while len(body) < length:
+                chunk = await reader.read(length - len(body))
+                if not chunk:
+                    break
+                body += chunk
+            form = _parse_form(body.decode())
+            entries = _live_entries()
+            _clamp_builder(len(entries))
+            if "builder_toggle" in form:
+                BUILDER["active"] = not BUILDER["active"]
+            elif "builder_step" in form:
+                try:
+                    step = int(form["builder_step"])
+                except ValueError:
+                    step = 0
+                if entries:
+                    BUILDER["position"] = max(
+                        0, min(len(entries) - 1,
+                               BUILDER["position"] + step))
+                    BUILDER["active"] = True  # stepping lights the LED
+            elif "builder_goto" in form:
+                try:
+                    pos = int(form.get("builder_pos",
+                                       BUILDER["position"]))
+                except ValueError:
+                    pos = BUILDER["position"]
+                if entries:
+                    BUILDER["position"] = max(
+                        0, min(len(entries) - 1, pos))
+                    BUILDER["active"] = True
+            elif "builder_legend" in form:
+                tag = (form.get("builder_legend")
+                       or "").strip().upper()
+                if not entries or (tag and tag not in LEGEND_TAGS):
+                    BUILDER["error"] = ("That legend choice isn't "
+                                        "recognized.")
+                else:
+                    entries[BUILDER["position"]] = \
+                        "LGND:" + tag if tag else "LGND"
+                    _save_airports(entries)
+                    BUILDER["active"] = True  # keep the light on it
+            elif "builder_save" in form:
+                new_id = (form.get("builder_id")
+                          or "").strip().upper()
+                if not entries or not _valid_airport_id(new_id):
+                    BUILDER["error"] = (
+                        "That doesn't look like a station ID. Use "
+                        "the ID as it appears in the METAR data "
+                        "(e.g. KFLG), or NULL / LGND.")
+                else:
+                    entries[BUILDER["position"]] = new_id
+                    _save_airports(entries)
+                    BUILDER["active"] = True  # keep the light on it
+            _save_builder()
+            writer.write(b"HTTP/1.1 303 See Other\r\nLocation: /\r\n"
+                         b"Content-Length: 0\r\n\r\n")
+            await writer.drain()
             return
         if method == "POST" and path == "/save":
             body = b""
@@ -1467,8 +1686,17 @@ async def _amain(layout, strip, wdt):
     last_ntp = time.ticks_ms()
     while True:
         cfg = load_config()
+        # The builder light shows at full brightness (you're standing
+        # at the map looking for one LED), whatever the day/night level.
+        bright = 100.0 if _builder_active(layout) \
+            else effective_brightness(cfg)
         now = time.ticks_ms()
         if time.ticks_diff(now, last_fetch) >= FETCH_INTERVAL_MS:
+            # Recomputed each cycle from the live list, so builder
+            # edits are fetched for from the next cycle on.
+            wanted = set(p for p in layout
+                         if p != "NULL" and not p.startswith("LGND"))
+            STATE["total"] = len(wanted)
             fresh = fetch_metars(wanted, wdt)
             if fresh is not None:
                 STATE["metars"] = fresh
@@ -1479,9 +1707,9 @@ async def _amain(layout, strip, wdt):
                     t[0], t[1], t[2], t[3], t[4])
                 colors, symbols = compute_frame(layout, fresh, cfg)
                 if cfg.get("use_wipe", True):
-                    strip.wipe(colors, effective_brightness(cfg), symbols)
+                    strip.wipe(colors, bright, symbols)
                 else:
-                    strip.show(colors, effective_brightness(cfg), symbols)
+                    strip.show(colors, bright, symbols)
                 log("fetch ok: %d of %d stations reporting"
                     % (len(fresh), len(wanted)))
             else:
@@ -1503,9 +1731,9 @@ async def _amain(layout, strip, wdt):
                 pass
         colors, symbols = compute_frame(layout, STATE["metars"], cfg)
         if isinstance(strip, SimStrip):
-            strip.show(colors, effective_brightness(cfg), symbols)
+            strip.show(colors, bright, symbols)
         else:
-            strip.show(colors, effective_brightness(cfg))
+            strip.show(colors, bright)
         if wdt:
             wdt.feed()
         await asyncio.sleep(RENDER_INTERVAL_S)
@@ -1513,6 +1741,8 @@ async def _amain(layout, strip, wdt):
 
 def run():
     layout = load_airports()
+    _LIVE["entries"] = layout
+    _load_builder(len(layout))
     cfg = load_config()
     strip = make_strip(len(layout), cfg)
     wdt = None

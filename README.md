@@ -136,7 +136,10 @@ whole data path before wiring anything.
   timezone; there is no DST handling (a non-issue in Arizona).
 - Status lives in memory instead of a `status.json` file; the web page
   shows the same data and polls the same JSON at `/api/status`.
-- No Map Builder — that stays Pi-only.
+- The Map Builder works like the Pi's: light one LED at full
+  brightness, step or jump along the string, save the airport that
+  belongs there (or a legend tag) — edits apply live, no restart, and
+  the position persists in `builder.json` across reboots.
 - No git on the board, so updates work differently from the Pi's pull:
   the admin page checks this repo hourly, and **Update now** downloads
   the changed code files (`boot.py`, `main.py`, `metar_micro.py`,
