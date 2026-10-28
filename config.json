@@ -1,0 +1,18 @@
+{
+  "brightness": 60,
+  "color_order": "GRB",
+  "high_wind": true,
+  "led_pin": 5,
+  "lightning": true,
+  "map_name": "",
+  "map_on": true,
+  "night_brightness": 25,
+  "night_end": "06:00",
+  "night_mode": true,
+  "night_start": "22:00",
+  "tz_offset_min": -420,
+  "use_wipe": true,
+  "watchdog": true,
+  "wifi_password": "YOUR_WIFI_PASSWORD",
+  "wifi_ssid": "YOUR_WIFI_NAME"
+}
