@@ -505,9 +505,17 @@ def _parse_listing(data):
 
 
 def _fetch_repo_listing():
-    return _parse_listing(_https_get_url(
-        "https://api.github.com/repos/%s/contents/" % GITHUB_REPO,
-        MAX_API_BYTES))
+    # One retry: GitHub's edge occasionally drops the TLS connection
+    # mid-handshake (MBEDTLS_ERR_SSL_CONN_EOF seen on hardware).
+    for attempt in (1, 2):
+        listing = _parse_listing(_https_get_url(
+            "https://api.github.com/repos/%s/contents/" % GITHUB_REPO,
+            MAX_API_BYTES))
+        if listing is not None:
+            return listing
+        if attempt == 1:
+            time.sleep(2)
+    return None
 
 
 def _changed_files(listing):
@@ -1225,6 +1233,10 @@ async def _apply_update():
             return
         for name, info in plan:
             data = _https_get_url(info["download_url"], MAX_CODE_BYTES)
+            if data is None:
+                await asyncio.sleep(2)   # one retry, as in the check
+                data = _https_get_url(info["download_url"],
+                                      MAX_CODE_BYTES)
             if data is None:
                 raise Exception("download of %s failed" % name)
             if _blob_sha_bytes(data) != info["sha"]:
