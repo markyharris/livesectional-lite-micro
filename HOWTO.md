@@ -65,10 +65,9 @@ In short: it's the cheapest board that does the encrypted download
 - A **5 V power supply for the LEDs**, sized for your map. Budget up
   to ~60 mA per LED worst case; in practice a 150–250 LED map runs
   well on a 5 V / 10 A brick. When in doubt, size up — an undersized
-  supply causes the weirdest faults in this hobby.
-- A **USB power supply for the board itself** — any 1 A phone charger
-  brick. This is separate from the LED supply, on purpose (see the
-  next section).
+  supply causes the weirdest faults in this hobby. This same supply
+  also powers the board, through its 5V pin (Step 7) — no separate
+  board supply is needed.
 - A **USB-C data cable** (not a charge-only cable — many bundled
   cables can't carry data; if the board never shows up on the
   computer, suspect the cable first).
@@ -86,21 +85,13 @@ In short: it's the cheapest board that does the encrypted download
   `main.py`, `metar_micro.py`, `scanner.py`, `config.json`,
   `airports`.
 
-## Three things that trip everyone up (read first)
+## Two things that trip everyone up (read first)
 
-1. **Powering the board from the LED supply.** It looks tidy — one
-   supply for everything — but the board's current draw spikes when
-   its Wi-Fi radio joins the network, and a shared supply often sags
-   just enough to brown the board out mid-join. The classic symptom:
-   the strip lights, but the board never appears on your network.
-   **Give the board its own USB power supply.** The two supplies
-   share only a ground wire and the data wire (Step 7). Never power
-   the board from USB *and* its 5V pin at the same time.
-2. **The wrong firmware variant.** This board needs the MicroPython
+1. **The wrong firmware variant.** This board needs the MicroPython
    build with **SPIRAM-OCT** in its name (for its octal PSRAM). The
    plain build for generic ESP32-S3 boards will not boot properly
    here. Step 1 points at the exact file.
-3. **Red and green swapped.** LED strips come in two color orders,
+2. **Red and green swapped.** LED strips come in two color orders,
    GRB (the common default) and RGB. If your map shows VFR airports
    red and IFR airports green, don't rewire anything — there's a
    **Color order** setting on the admin page (Step 8). Flip it, done.
@@ -209,7 +200,7 @@ them are also on the admin page later): `brightness` (percent),
 off overnight), `high_wind` (blink windy airports), `lightning`
 (flash airports reporting thunderstorms), `use_wipe` (the
 blank-then-sweep transition when new data arrives), `color_order`
-(GRB or RGB — trip-up #3), `led_pin` (the GPIO driving the strip,
+(GRB or RGB — trip-up #2), `led_pin` (the GPIO driving the strip,
 default 5), `map_name` (an optional label shown on the admin page),
 `map_on`, and `watchdog` (a hardware self-reset if the board ever
 hangs — leave it `true`).
@@ -280,13 +271,16 @@ Power everything off while wiring.
    `led_pin` setting, so it can move if you must). Put the
    220–470 Ω resistor in series in this wire if you have one — it
    cleans up the signal. Keep this wire as short as practical.
-2. **Ground (shared):** connect a board **GND** pin to the LED
-   supply's negative **and** the strip's GND. This shared ground is
-   what lets the two separate supplies cooperate — don't skip it.
+2. **Ground:** connect a board **GND** pin to the LED supply's
+   negative **and** the strip's GND. Board, strip and supply all
+   need this common ground — don't skip it.
 3. **Strip power:** the strip's **+5V** goes to the LED supply's
-   positive. *Not* to the board.
-4. **Board power:** the board plugs into its **own USB power
-   supply**. Never feed the board from USB and its 5V pin at once.
+   positive.
+4. **Board power:** connect the board's **5V** pin to the LED
+   supply's positive — the same 5 V brick that powers the strip
+   powers the board through its pins, so no USB power connection
+   is needed in the finished map. One caution: never feed the
+   board from USB *and* its 5V pin at the same time.
 
 For long strips, feed power at both ends if your map design allows —
 voltage sags along a long strip and shows up as dim, reddish far-end
@@ -300,8 +294,8 @@ pushbutton between **EN** and **GND** — pressing it resets the board,
 exactly like the onboard button. Keep the wires short or twisted
 together; EN is a sensitive line.
 
-Power up the LED supply and the board's USB supply. Within a minute
-the map should light with current conditions.
+Power up the 5 V supply. Within a minute the map should light
+with current conditions.
 
 ## Step 8 — Find the admin page and finish setup
 
@@ -315,7 +309,7 @@ On the page:
    last fetched, how many stations are reporting, and the per-category
    counts. It re-reads itself every 30 seconds — no refreshing.
 2. **If red and green are swapped**, open **Settings**, set **Color
-   order** to RGB, Save. (Trip-up #3, fixed in ten seconds.)
+   order** to RGB, Save. (Trip-up #2, fixed in ten seconds.)
 3. **Give the map a name** in Settings if you like — with several
    maps it's how you tell their pages (and browser tabs) apart. The
    tab icon helps too: this board's icon is the sectional-chart scrap
@@ -456,7 +450,6 @@ stage; `[metar-micro]` is the application.
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| Board never appears on the network; strip may be lit | Board browning out during the Wi-Fi join because it's powered from the LED supply | Give the board its own USB supply; share only ground + data (trip-up #1) |
 | Worked yesterday, dead after a power outage | Board booted before the router finished booting | Press **RST** (or your frame reset button) once the router is back |
 | Boot loop printing `invalid header: 0xffffffff` | A firmware write didn't take | Erase and reflash with the esptool commands in Step 3 |
 | `[boot] Wi-Fi join failed` | Wrong SSID/password, or a 5 GHz-only network name | Check `config.json` credentials; use a 2.4 GHz SSID |
