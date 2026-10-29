@@ -1130,6 +1130,17 @@ _PAGE_BODY = """
   <button type="submit" name="builder_legend" value="TS">Storms</button>
   <button type="submit" name="builder_legend" value="">Plain LGND</button></p>
 </form>
+<form method="post" action="/upload-airports" enctype="multipart/form-data"
+      onsubmit="return confirm('Replace the whole airports list with the uploaded file? Your current list is kept as airports.bak.')">
+  <p style="margin:0.6em 0 0"><label for="airports_file">Upload an airports file</label>
+  <input type="file" id="airports_file" name="airports_file" accept=".txt,text/plain" required>
+  <button type="submit" style="margin-top:0.5em">Upload and replace list</button></p>
+  <p style="margin:0.2em 0 0;color:#555">Already have a list - for example
+     the airports file from an original LiveSectional? Its format is the
+     same (one station ID, NULL or LGND per line, in LED order), so it
+     uploads as-is. The upload replaces the whole list and the board
+     reboots to load it. Your previous list is kept as airports.bak.</p>
+</form>
 </details>
 <hr>
 <details class="section" id="sec-power">
@@ -1160,17 +1171,6 @@ Wi-Fi password: <input name="wifi_password" type="password" placeholder="(unchan
 <p><button type="submit">Save</button></p></form>
 <p style="color:#666">Display settings apply on the next cycle. Wi-Fi and
 GPIO changes apply after a reboot.</p>
-</details>
-<hr>
-<details class="section" id="sec-airports">
-<summary style="margin-top:1em"><h2 style="display:inline;margin:0">Airports file</h2></summary>
-<p style="color:#555;margin:0.2em 0 0">Replace the station list (one
-entry per line, in LED order - an original LiveSectional airports
-backup works as-is). The current list is kept as airports.bak, and
-the board reboots to load the new list.</p>
-<form method="post" action="/upload-airports" enctype="multipart/form-data">
-<p><input type="file" name="airports_file" required>
-<button type="submit">Upload airports file</button></p></form>
 </details>
 <hr>
 <details class="section" id="sec-stations">
