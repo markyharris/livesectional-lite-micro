@@ -42,7 +42,10 @@ bright-yellow flashes (steady yellow if lightning is off).
 Edited on the board's web page, stored in `config.json`, picked up on
 the next cycle. The page opens with a live status box (map on/off, last
 fetch, stations reporting, per-category counts, board IP) that
-refreshes itself every 30 seconds, then a **Stations** section —
+refreshes itself every 30 seconds. If the data pipeline stalls —
+three failed fetches in a row, or 20 minutes with no new data — the
+status box raises a red **Board Not Running** banner saying how long
+it has been and the last error seen. Then a **Stations** section —
 every airport with its category color and its raw METAR on hover/tap,
 with a filter box — then the settings form, then an **airports-file
 upload** (same validation as the Pi page: an original LiveSectional

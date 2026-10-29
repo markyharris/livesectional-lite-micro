@@ -455,6 +455,7 @@ stage; `[metar-micro]` is the application.
 | `[boot] Wi-Fi join failed` | Wrong SSID/password, or a 5 GHz-only network name | Check `config.json` credentials; use a 2.4 GHz SSID |
 | VFR shows red, IFR shows green | Strip is RGB color order | Settings → **Color order** → RGB, Save |
 | Every LED silver (dim white) | No weather data — fetch failing, or the IDs in `airports` don't match real station IDs | Check the console for `fetch ok` vs `fetch failed`; fix IDs to match the METAR data |
+| Red **Board Not Running** banner in the status box | The board is alive (the page loaded) but weather data has stopped: 3 failed fetches in a row, or 20 minutes with no new data | Read the banner's last-error line: a network error points at Wi-Fi/internet, an HTTP error at the weather server. Fetches keep retrying every 5 minutes and the banner clears on its own once data flows again |
 | Just one airport always silver | That station isn't reporting (common at small fields overnight) — the map is fine | Check the station in the **Stations** section; no raw METAR = nothing to show |
 | Admin page occasionally slow to load | The 5-minute fetch monopolizes the board for a few seconds | Normal on a single-board version; wait and reload |
 | Times on the page are off by an hour | Daylight-saving change | Adjust `tz_offset_min` by 60 (Step 4); Arizona stays put |

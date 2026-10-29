@@ -84,6 +84,9 @@ if not hasattr(time, "ticks_ms"):
 CACHE_HOST = "aviationweather.gov"
 CACHE_PATH = "/data/cache/metars.cache.xml.gz"
 FETCH_INTERVAL_MS = 300 * 1000        # 5 minutes between fetches
+OFFLINE_FAILS = 3          # failed fetches in a row before the status
+                           # box raises its "Board Not Running" banner
+OFFLINE_AGE_MIN = 20       # ... or this many minutes with no new data
 FETCH_TIMEOUT_S = 45
 RENDER_INTERVAL_S = 0.25
 WIND_THRESHOLD_KT = 15
@@ -150,7 +153,13 @@ DEFAULT_CONFIG = {
 }
 
 STATE = {"metars": {}, "last_fetch": "never", "last_fetch_ts": 0,
-         "reporting": 0, "total": 0}
+         "reporting": 0, "total": 0,
+         # Fetch health, for the status box's "Board Not Running"
+         # banner: consecutive failed (or empty) fetches, the last
+         # error seen, and when data last arrived (ticks clock, so
+         # NTP jumps can't fake or hide staleness).
+         "fetch_failures": 0, "fetch_attempts": 0, "last_error": "",
+         "last_ok_ticks": 0}
 
 UPDATE_STATE = {"available": False, "files": 0, "failed": "",
                 "applying": False}
@@ -338,6 +347,7 @@ def _fetch_once(host, path, wanted, wdt):
             return ("redirect", loc)
         if status != 200:
             log("HTTP status %d" % status)
+            STATE["last_error"] = "HTTP %d from the weather server" % status
             return None
         if "chunked" in headers.get("transfer-encoding", ""):
             body = _ChunkedStream(sock)
@@ -374,6 +384,7 @@ def fetch_metars(wanted, wdt=None):
             res = _fetch_once(host, path, wanted, wdt)
         except Exception as e:
             log("fetch failed: %s" % e)
+            STATE["last_error"] = ("%s: %s" % (type(e).__name__, e))[:80]
             return None
         if isinstance(res, tuple) and res[0] == "redirect":
             loc = res[1]
@@ -822,6 +833,35 @@ def _board_ip():
         return ""
 
 
+def _health():
+    """Is the data pipeline alive? Returns (offline, detail).
+
+    The board itself is up whenever this page answers at all - the web
+    server and the fetch loop are the same program - so "offline" here
+    means the map has stopped getting weather: OFFLINE_FAILS failed
+    fetches in a row, or OFFLINE_AGE_MIN minutes since the last data
+    arrived. The detail line says which, and the last error seen."""
+    fails = STATE.get("fetch_failures", 0)
+    age_min = None
+    if STATE.get("fetch_attempts", 0):
+        age_min = time.ticks_diff(time.ticks_ms(),
+                                  STATE.get("last_ok_ticks", 0)) // 60000
+    offline = (fails >= OFFLINE_FAILS
+               or (age_min is not None and age_min >= OFFLINE_AGE_MIN))
+    if not offline:
+        return False, ""
+    bits = []
+    if age_min:
+        bits.append("No new weather data for %d minutes." % age_min)
+    else:
+        bits.append("No weather data received yet.")
+    if fails:
+        bits.append("Last %d fetch attempt(s) failed." % fails)
+    if STATE.get("last_error"):
+        bits.append("Last error: %s" % STATE["last_error"])
+    return True, " ".join(bits)
+
+
 def _status_dict(cfg):
     """Status-box data, shared by the page and /api/status (the page
     polls the JSON every 30 s, mirroring the Pi admin page)."""
@@ -832,11 +872,13 @@ def _status_dict(cfg):
             counts[m["category"]] += 1
         stations[sid] = {"category": m["category"],
                          "raw": m.get("raw", "")}
+    offline, offline_detail = _health()
     return {"last_fetch_pretty": _pretty_fetch(cfg),
             "stations_reporting": STATE["reporting"],
             "stations_total": STATE["total"],
             "counts": counts, "stations": stations,
             "map_on": bool(cfg.get("map_on", True)),
+            "offline": offline, "offline_detail": offline_detail,
             "update_available": UPDATE_STATE["available"],
             "update_files": UPDATE_STATE["files"],
             "update_failed": UPDATE_STATE["failed"]}
@@ -1061,6 +1103,10 @@ _PAGE_BODY = """
 <h2 style="margin:0">LS Lite Micro%%HEADING_NAME%%</h2>
 </div>
 <div class="status">
+<div id="st-offline" style="%%OFFLINE_STYLE%%color:#fff;background:#b00;padding:0.5em 0.6em;border-radius:4px;margin-bottom:0.5em">
+<p style="margin:0;font-weight:bold">&#9888; Board Not Running</p>
+<p id="st-offline-detail" style="margin:0.2em 0 0">%%OFFLINE_DETAIL%%</p>
+</div>
 <p>Map is <strong id="st-map">%%MAP_STATE%%</strong></p>
 <p>Last fetch: <strong id="st-fetch">%%LAST_FETCH%%</strong></p>
 <p>Stations reporting: <strong id="st-reporting">%%REPORTING%%</strong>
@@ -1223,6 +1269,11 @@ _PAGE_SCRIPTS = """<script>
         setText("st-ifr", s.counts.IFR);
         setText("st-lifr", s.counts.LIFR);
         updateStations(s.stations);
+        var off = document.getElementById("st-offline");
+        if (off) {
+          off.style.display = s.offline ? "" : "none";
+          if (s.offline) setText("st-offline-detail", s.offline_detail);
+        }
         var upd = document.getElementById("st-update");
         if (upd) {
           var av = document.getElementById("st-upavail");
@@ -1327,6 +1378,8 @@ def _render_page(cfg):
         "%%MAP_STATE%%": "ON" if sd["map_on"] else "OFF",
         "%%TOGGLE_LABEL%%": "Turn map OFF" if sd["map_on"] else "Turn map ON",
         "%%LAST_FETCH%%": _esc(sd["last_fetch_pretty"]),
+        "%%OFFLINE_STYLE%%": "" if sd["offline"] else "display:none;",
+        "%%OFFLINE_DETAIL%%": _esc(sd["offline_detail"]),
         "%%REPORTING%%": str(sd["stations_reporting"]),
         "%%TOTAL%%": str(sd["stations_total"]),
         "%%VFR%%": str(sd["counts"]["VFR"]),
@@ -1684,6 +1737,10 @@ async def _amain(layout, strip, wdt):
     last_fetch = time.ticks_add(time.ticks_ms(), -FETCH_INTERVAL_MS)
     last_update = time.ticks_add(time.ticks_ms(), -UPDATE_CHECK_MS)
     last_ntp = time.ticks_ms()
+    # The staleness clock for the "Board Not Running" banner starts at
+    # boot: a board that never gets data raises the banner after
+    # OFFLINE_AGE_MIN minutes even before OFFLINE_FAILS failures pile up.
+    STATE["last_ok_ticks"] = last_ntp
     while True:
         cfg = load_config()
         # The builder light shows at full brightness (you're standing
@@ -1698,6 +1755,20 @@ async def _amain(layout, strip, wdt):
                          if p != "NULL" and not p.startswith("LGND"))
             STATE["total"] = len(wanted)
             fresh = fetch_metars(wanted, wdt)
+            STATE["fetch_attempts"] += 1
+            if fresh is not None and len(fresh):
+                STATE["fetch_failures"] = 0
+                STATE["last_error"] = ""
+                STATE["last_ok_ticks"] = time.ticks_ms()
+            elif fresh is not None:
+                # The fetch worked but the cache held none of our
+                # stations - the map is just as starved as a failure.
+                STATE["fetch_failures"] += 1
+                if not STATE["last_error"]:
+                    STATE["last_error"] = ("cache file held none of "
+                                           "the mapped stations")
+            else:
+                STATE["fetch_failures"] += 1
             if fresh is not None:
                 STATE["metars"] = fresh
                 STATE["reporting"] = len(fresh)
