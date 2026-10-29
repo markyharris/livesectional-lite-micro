@@ -85,11 +85,12 @@ off, use the map-off button or cut its power).
 
 - Strip **5 V** and **GND** from a proper 5 V supply (do not power 183
   LEDs from the dev board's regulator).
-- **Power the board separately** — its own USB power brick is ideal.
-  Feeding the board from the strip's shared 5 V rail browned it out
-  during the Wi-Fi join (learned the hard way, Oct 2026): the map kept
-  its last frame but never joined the network.
-- **Common ground** between the supply and the board.
+- **Power the board from that same supply** — its **5 V** pin to the
+  supply's positive, a **GND** pin to its negative. No USB power
+  connection is needed in the finished map (proven on a real map,
+  Oct 2026, Wi-Fi and admin page included). Just never feed the
+  board from USB *and* its 5 V pin at the same time.
+- **Common ground** between the supply, the strip and the board.
 - Strip **DATA** ← board **GPIO 5** (default; change `led_pin` in
   config or on the web page).
 - The ESP32 outputs 3.3 V logic; most WS2812 strips accept it on short
