@@ -117,6 +117,11 @@ console — the scrolling text log that tells you what the board is
 doing. When something misbehaves later, that console is where the
 answer lives.
 
+Get the **current** version from the site (5.x as of this writing;
+anything 4.1 or newer works). An old 3.x copy already on your
+computer will install but cannot flash this board correctly —
+Step 3 explains why.
+
 ## Step 3 — Flash MicroPython onto the board
 
 "Flashing" writes the MicroPython firmware into the board's memory.
@@ -130,9 +135,43 @@ and **USB** instead; if your computer doesn't notice the board, try
 the other port). The board will appear as a serial port: `COM3`-style
 on Windows, `/dev/ttyACM0` on Linux, `/dev/cu.usbmodem…` on macOS.
 
-**On Windows and macOS, use Thonny plus esptool.** Thonny has a
-built-in firmware installer, but the manual tool below (esptool) is
-the reliable path — it verifies what it wrote, byte for byte:
+**On Windows and macOS, use Thonny's built-in installer.** One
+version warning first, learned the hard way: the installer only
+handles the ESP32-S3 correctly in **Thonny 4.1 and newer** (the
+current release is 5.x, which is what Step 2 gets you). Thonny 3.x
+writes this chip's firmware to the wrong address — the install
+reports success, "Hash of data verified" and all, and the board
+then boot-loops printing `invalid header: 0xffffffff`. If
+**Help → About** shows a 3.x version, upgrade before going any
+further.
+
+1. In Thonny, open **Tools → Options → Interpreter**. Choose
+   **MicroPython (ESP32)** and your board's port, then click
+   **Install or update MicroPython (esptool)**.
+2. In the installer window, set **MicroPython family** to
+   **ESP32-S3**. That family choice is what tells Thonny where in
+   flash the firmware belongs — and it's the field the old version
+   didn't have.
+3. Point it at the firmware file from Step 1: click the **☰**
+   button in the installer's corner, choose **Select local
+   MicroPython image**, and pick the
+   `ESP32_GENERIC_S3-SPIRAM-OCT-....bin` file. Using the local file
+   guarantees the Octal-SPIRAM build; the installer's online
+   variant list doesn't always offer it.
+4. Click **Install** and wait for **Done!**. The installer writes
+   the firmware only — files already on the board, settings
+   included, are left alone.
+5. Close the options windows. Back in Thonny's console you should
+   see a `>>>` prompt — that's MicroPython alive on your board.
+   Pressing the board's **RST** button restarts it; you'll see the
+   ESP32 boot text scroll by. (One scary-looking line is fine:
+   `E (25) qio_mode: Failed to set QIE bit...` is a harmless
+   warning some of these boards print; the boot continues past it.)
+
+**Alternate — flash by hand with esptool.** The installer above is
+a front end for this same tool. If it ever gives you trouble, these
+commands are the known-good fallback — they verify what they
+wrote, byte for byte:
 
 1. Open Thonny. At the bottom right, click the interpreter name and
    choose **Local Python 3** (your computer's own Python). This frees
@@ -153,9 +192,8 @@ the reliable path — it verifies what it wrote, byte for byte:
    It ends with **"Hash of data verified."** — that line matters; it
    means the image on the board is exactly the file you downloaded.
    (If a flash ever produces a board that reboots in a loop printing
-   `invalid header: 0xffffffff`, the write didn't take — erase and
-   write again with these commands rather than a graphical
-   installer.)
+   `invalid header: 0xffffffff`, the firmware didn't land where the
+   chip looks for it — erase and write again with these commands.)
 6. Now switch Thonny back to the board: click the interpreter name
    (bottom right) and choose **MicroPython (ESP32)** and your board's
    port. The console panel should show a `>>>` prompt — that's
@@ -301,7 +339,8 @@ with current conditions.
 
 Browse to the board's IP address (from the Step 6 console line, or
 find the board in your router's connected-devices list — it shows as
-an Espressif device with the MAC address esptool printed in Step 3).
+an Espressif device with the MAC address shown when you flashed it
+in Step 3).
 
 On the page:
 
@@ -451,7 +490,7 @@ stage; `[metar-micro]` is the application.
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | Worked yesterday, dead after a power outage | Board booted before the router finished booting | Press **RST** (or your frame reset button) once the router is back |
-| Boot loop printing `invalid header: 0xffffffff` | A firmware write didn't take | Erase and reflash with the esptool commands in Step 3 |
+| Boot loop printing `invalid header: 0xffffffff` | The firmware didn't land where the chip looks for it — classically an old (3.x) Thonny installer, which writes this chip at the wrong address while reporting success | Check Thonny's version (Help → About): upgrade to 4.1+ and reflash per Step 3, or use Step 3's manual esptool commands |
 | `[boot] Wi-Fi join failed` | Wrong SSID/password, or a 5 GHz-only network name | Check `config.json` credentials; use a 2.4 GHz SSID |
 | VFR shows red, IFR shows green | Strip is RGB color order | Settings → **Color order** → RGB, Save |
 | Every LED silver (dim white) | No weather data — fetch failing, or the IDs in `airports` don't match real station IDs | Check the console for `fetch ok` vs `fetch failed`; fix IDs to match the METAR data |
