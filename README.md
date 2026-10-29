@@ -5,6 +5,10 @@ behavior, same data source — running on an ESP32-S3 under MicroPython
 instead of a Raspberry Pi. METARs only, one LED per airport, driven from
 a single bulk download.
 
+**Building one?** [HOWTO.md](HOWTO.md) is the complete step-by-step
+setup guide — parts, firmware flashing, wiring, first run, and
+troubleshooting, written for a first-time builder.
+
 ## How it works
 
 Every 5 minutes the board downloads the Aviation Weather Center cache
