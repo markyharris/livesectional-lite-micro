@@ -89,10 +89,13 @@ off, use the map-off button or cut its power).
 - Strip **5 V** and **GND** from a proper 5 V supply (do not power 183
   LEDs from the dev board's regulator).
 - **Power the board from that same supply** — its **5 V** pin to the
-  supply's positive, a **GND** pin to its negative. No USB power
-  connection is needed in the finished map (proven on a real map,
-  Oct 2026, Wi-Fi and admin page included). Just never feed the
-  board from USB *and* its 5 V pin at the same time.
+  supply's positive, a **GND** pin to its negative. On many maps
+  that's the whole story (proven on a real map, Oct 2026, Wi-Fi and
+  admin page included), but it's map-dependent: a board that
+  resets, drops Wi-Fi, or won't hold its admin page on pin power
+  alone is telling you the feed is marginal, and connecting USB
+  power as well is the fix — one of the author's maps runs with
+  both feeds connected.
 - **Common ground** between the supply, the strip and the board.
 - Strip **DATA** ← board **GPIO 5** (default; change `led_pin` in
   config or on the web page).

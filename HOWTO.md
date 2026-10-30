@@ -66,8 +66,9 @@ In short: it's the cheapest board that does the encrypted download
   to ~60 mA per LED worst case; in practice a 150–250 LED map runs
   well on a 5 V / 10 A brick. When in doubt, size up — an undersized
   supply causes the weirdest faults in this hobby. This same supply
-  also powers the board, through its 5V pin (Step 7) — no separate
-  board supply is needed.
+  also powers the board, through its 5V pin (Step 7) on most maps;
+  on some, the board also wants a USB power connection — Step 7
+  explains how to tell.
 - A **USB-C data cable** (not a charge-only cable — many bundled
   cables can't carry data; if the board never shows up on the
   computer, suspect the cable first).
@@ -316,9 +317,15 @@ Power everything off while wiring.
    positive.
 4. **Board power:** connect the board's **5V** pin to the LED
    supply's positive — the same 5 V brick that powers the strip
-   powers the board through its pins, so no USB power connection
-   is needed in the finished map. One caution: never feed the
-   board from USB *and* its 5V pin at the same time.
+   powers the board through its pins, and on many maps that's all
+   it needs. It is map-dependent, though: the Wi-Fi radio pulls
+   power in bursts, and a marginal feed (long thin wires, a busy
+   strip, a tired supply) shows up as resets, Wi-Fi that won't
+   join, or an admin page that comes and goes. If yours does any
+   of that, connect a USB power source to the board as well and
+   see if it settles — one of the author's maps runs exactly that
+   way, both feeds connected. Treat "add USB power" as the first
+   test whenever a board acts flaky.
 
 For long strips, feed power at both ends if your map design allows —
 voltage sags along a long strip and shows up as dim, reddish far-end
@@ -495,6 +502,7 @@ stage; `[metar-micro]` is the application.
 | VFR shows red, IFR shows green | Strip is RGB color order | Settings → **Color order** → RGB, Save |
 | Every LED silver (dim white) | No weather data — fetch failing, or the IDs in `airports` don't match real station IDs | Check the console for `fetch ok` vs `fetch failed`; fix IDs to match the METAR data |
 | Red **Board Not Running** banner in the status box | The board is alive (the page loaded) but weather data has stopped: 3 failed fetches in a row, or 20 minutes with no new data | Read the banner's last-error line: a network error points at Wi-Fi/internet, an HTTP error at the weather server. Fetches keep retrying every 5 minutes and the banner clears on its own once data flows again |
+| Board resets, Wi-Fi drops, or the admin page comes and goes | Marginal 5 V feed to the board through its 5V pin — enough on some maps, not on others | Connect USB power to the board as well (Step 7); if that cures it, the pin feed was the problem |
 | Just one airport always silver | That station isn't reporting (common at small fields overnight) — the map is fine | Check the station in the **Stations** section; no raw METAR = nothing to show |
 | Admin page occasionally slow to load | The 5-minute fetch monopolizes the board for a few seconds | Normal on a single-board version; wait and reload |
 | Times on the page are off by an hour | Daylight-saving change | Adjust `tz_offset_min` by 60 (Step 4); Arizona stays put |
