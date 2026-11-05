@@ -95,6 +95,17 @@ WIPE_SECONDS = 1.5
 BLANK_SECONDS = 0.5            # dark beat before the wipe, so updates show
 USER_AGENT = "metar-map-micro/1.0 (personal LED weather map)"
 
+# Wi-Fi provisioning (captive portal): when the map cannot join a
+# network - no credentials in config yet, a join that will not take,
+# or the BOOT button held at startup - it hosts its own open setup
+# network instead, so the new Wi-Fi can be entered from a phone.
+PROV_AP_SSID = "LSLite-Micro-Setup"
+PROV_AP_IP = "192.168.4.1"        # the ESP32 AP interface default
+PROV_PLACEHOLDER_SSID = "YOUR_WIFI_NAME"   # as shipped in config.json
+PROV_JOIN_WAIT_S = 15        # one fresh join attempt before setup mode
+PROV_BOOT_WINDOW_S = 3       # BOOT-hold sample window at run() start
+SETUP_COLOR = (0, 0, 48)     # steady dim blue: "waiting for Wi-Fi setup"
+
 # Self-update from GitHub (the board has no git; this is the file-based
 # equivalent of the Pi's pull-and-restart): the admin page checks the
 # repo hourly, and Update now downloads the code files below, verifies
@@ -1726,6 +1737,431 @@ async def _handle_client(reader, writer):
 
 
 # ---------------------------------------------------------------------------
+# Wi-Fi provisioning (captive-portal setup mode)
+#
+# A map with no usable network - fresh out of the box, moved to a new
+# home, or told to forget its credentials - hosts its own open access
+# point and serves a setup page, so the Wi-Fi can be entered from a
+# phone. A DNS catch-all answers every lookup with the board's own
+# address, which makes the phone pop the page up by itself, the way a
+# hotel sign-in sheet does. Saving writes only the two Wi-Fi fields
+# of config.json and reboots; the board then joins the new network
+# normally, and boot.py / the render loop never know it happened.
+# ---------------------------------------------------------------------------
+def _prov_clean_scan(raw):
+    """Turn wlan.scan() output into the setup page's network list:
+    (ssid, rssi) pairs, strongest first. Hidden networks (empty
+    SSID), duplicates and undecodable names are dropped - the page
+    keeps a manual-entry field for anything the scan cannot name.
+    scan() yields (ssid, bssid, channel, rssi, authmode, hidden);
+    only the name and strength matter here."""
+    best = {}
+    for entry in raw or ():
+        try:
+            ssid = entry[0].decode("utf-8").strip()
+            rssi = int(entry[3])
+        except Exception:
+            continue
+        if not ssid:
+            continue
+        if ssid not in best or rssi > best[ssid]:
+            best[ssid] = rssi
+    return sorted(best.items(), key=lambda kv: -kv[1])
+
+
+def _prov_scan(sta):
+    """One Wi-Fi scan, cleaned for the page. Never raises."""
+    try:
+        return _prov_clean_scan(sta.scan())
+    except Exception as e:
+        log("provisioning scan failed: %s" % e)
+        return []
+
+
+def _dns_reply(query):
+    """Answer one DNS query packet with PROV_AP_IP, whatever name was
+    asked - in setup mode every lookup lands on the board, which is
+    what makes the phone open the setup page by itself. Returns the
+    response packet, or None for a malformed query (drop those)."""
+    try:
+        if len(query) < 12:
+            return None
+        if ((query[4] << 8) | query[5]) < 1:
+            return None                    # no question to answer
+        # Walk the question section: length-prefixed labels ended by
+        # a zero byte, then QTYPE + QCLASS (4 bytes).
+        i = 12
+        while True:
+            if i >= len(query):
+                return None
+            n = query[i]
+            i += 1
+            if n == 0:
+                break
+            if n & 0xC0:      # compression pointer: never in a question
+                return None
+            i += n
+        if i + 4 > len(query):
+            return None
+        question = query[12:i + 4]
+        flags = 0x8000 | (query[2] & 0x79) | 0x0080  # QR, opcode+RD, RA
+        resp = bytearray()
+        resp += query[0:2]                     # same transaction ID
+        resp += bytes((flags >> 8, flags & 0xFF))
+        resp += b"\x00\x01"                   # QDCOUNT
+        resp += b"\x00\x01"                   # ANCOUNT
+        resp += b"\x00\x00\x00\x00"           # NSCOUNT + ARCOUNT
+        resp += question
+        resp += b"\xc0\x0c"                   # NAME: pointer to question
+        resp += b"\x00\x01"                   # TYPE A
+        resp += b"\x00\x01"                   # CLASS IN
+        resp += b"\x00\x00\x00\x3c"           # TTL 60 s
+        resp += b"\x00\x04"                   # RDLENGTH
+        for part in PROV_AP_IP.split("."):
+            resp.append(int(part))
+        return bytes(resp)
+    except Exception:
+        return None
+
+
+def _prov_validate(form):
+    """Check the setup form. The manual SSID field wins over the
+    scanned-list pick (it is the only way to name a hidden network).
+    Returns (ssid, password); raises ValueError with a message meant
+    for the user when something is off."""
+    ssid = ((form.get("ssid_manual") or "").strip()
+            or (form.get("ssid") or "").strip())
+    password = form.get("wifi_password") or ""
+    if not ssid:
+        raise ValueError("Pick a network from the list, or type its "
+                         "name in the box below it.")
+    if len(ssid) > 32:
+        raise ValueError("That network name is too long - Wi-Fi "
+                         "names are at most 32 characters.")
+    if len(password) > 64:
+        raise ValueError("That password is too long - Wi-Fi "
+                         "passwords are at most 64 characters.")
+    return ssid, password
+
+
+def _prov_apply(ssid, password):
+    """Write ONLY the Wi-Fi fields of the loaded config and save;
+    every other setting belongs to the map and stays as it was."""
+    cfg = load_config()
+    cfg["wifi_ssid"] = ssid
+    cfg["wifi_password"] = password
+    save_config(cfg)
+    return cfg
+
+
+_PROV_PAGE = """<!DOCTYPE html><html><head><title>LS Lite Micro - WiFi Setup</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body { font-family: sans-serif; max-width: 34em; margin: 1em auto; padding: 0 1em; }
+input, select { font-size: 1em; padding: 0.3em; width: 100%; box-sizing: border-box; }
+button { font-size: 1em; padding: 0.4em 1.2em; }
+</style></head><body>
+<h2>LS Lite Micro &mdash; WiFi Setup</h2>
+%%ERR%%
+<p>This map is not on a Wi-Fi network yet. You are connected to its
+own setup network, <strong>LSLite-Micro-Setup</strong>. Tell it which
+network to join%%FOR%% and that network's password; it saves them, restarts,
+and joins - this setup network then disappears, so reconnect your
+phone to your normal Wi-Fi afterwards.</p>
+<form method="post" action="/save">
+<p><label for="ssid">Network</label><br>
+<select name="ssid" id="ssid">%%OPTIONS%%</select></p>
+<p><label for="ssid_manual">... or type the name instead (hidden networks)</label><br>
+<input name="ssid_manual" id="ssid_manual" autocomplete="off"></p>
+<p><label for="wifi_password">Wi-Fi password (blank for an open network)</label><br>
+<input name="wifi_password" id="wifi_password" type="password"></p>
+<p><label><input type="checkbox" id="show_pw" style="width:auto"
+onchange="document.getElementById('wifi_password').type = this.checked ? 'text' : 'password'">
+Show password</label></p>
+<p><button type="submit">Save and restart</button></p>
+</form>
+<p><a href="/rescan">Rescan for networks</a></p>
+</body></html>"""
+
+
+def _prov_page(cfg, nets, error=""):
+    name = cfg.get("map_name", "") or ""
+    for_what = (" for the map &ldquo;%s&rdquo;" % _esc(name)) if name else ""
+    options = "".join(
+        '<option value="%s">%s (%d dBm)</option>'
+        % (_esc(ssid), _esc(ssid), rssi) for ssid, rssi in nets)
+    if not options:
+        options = '<option value="">(no networks found)</option>'
+    err = ('<p style="color:#b00"><strong>%s</strong></p>'
+           % _esc(error)) if error else ""
+    return (_PROV_PAGE.replace("%%ERR%%", err)
+            .replace("%%OPTIONS%%", options)
+            .replace("%%FOR%%", for_what))
+
+
+# Probe paths the phones' connectivity checks ask for, plus the usual
+# sign-in sheet addresses. Every one - and every other unknown path -
+# gets the same 302 to the setup page.
+_PROV_PROBES = ("/generate_204", "/gen_204", "/hotspot-detect.html",
+                "/library/test/success.html", "/ncsi.txt",
+                "/connecttest.txt", "/success.txt", "/portal.html",
+                "/fwlink", "/redirect", "/canonical.html",
+                "/check_network_status.txt", "/mmtls", "/kindle-wifi")
+
+_PROV_HOME = ("http://" + PROV_AP_IP + "/").encode()
+
+
+async def _prov_redirect(writer):
+    writer.write(b"HTTP/1.1 302 Found\r\nLocation: " + _PROV_HOME
+                 + b"\r\nContent-Length: 0\r\n\r\n")
+    await writer.drain()
+
+
+async def _prov_handle(reader, writer, ctx):
+    """Setup-mode web handler: the setup page, its save POST, and a
+    302 to the page for everything else - the captive-portal probes
+    phones fire off, and any other path, all land on the form."""
+    try:
+        line = await reader.readline()
+        if not line:
+            return
+        parts = line.decode().split(" ")
+        if len(parts) < 2:
+            return
+        method = parts[0]
+        path = parts[1].split("?")[0]
+        length = 0
+        while True:
+            h = await reader.readline()
+            if h in (b"\r\n", b"\n", b""):
+                break
+            if h.lower().startswith(b"content-length:"):
+                length = int(h.split(b":")[1])
+        if method == "GET" and path in ("/", "/rescan"):
+            nets = ctx["nets"]
+            if path == "/rescan" or nets is None:
+                nets = _prov_scan(ctx["sta"])
+                ctx["nets"] = nets
+            data = _prov_page(load_config(), nets).encode()
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+                         b"Content-Length: %d\r\n\r\n" % len(data))
+            writer.write(data)
+            await writer.drain()
+            return
+        if method == "POST" and path == "/save":
+            body = b""
+            while len(body) < length:
+                chunk = await reader.read(length - len(body))
+                if not chunk:
+                    break
+                body += chunk
+            form = _parse_form(body.decode())
+            try:
+                ssid, password = _prov_validate(form)
+            except ValueError as e:
+                data = _prov_page(load_config(), ctx["nets"] or [],
+                                  str(e)).encode()
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: "
+                             b"text/html\r\nContent-Length: %d\r\n\r\n"
+                             % len(data))
+                writer.write(data)
+                await writer.drain()
+                return
+            _prov_apply(ssid, password)
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: "
+                         b"text/html\r\n\r\n")
+            writer.write(_notice(
+                "Wi-Fi saved",
+                "The map will restart and join <strong>%s</strong>. "
+                "Give it a few seconds, then look for it on that "
+                "network." % _esc(ssid)))
+            await writer.drain()
+            asyncio.create_task(_reset_later())
+            return
+        await _prov_redirect(writer)
+    except Exception as e:
+        log("provisioning client error: %s" % e)
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+
+async def _prov_dns_task():
+    """DNS catch-all on UDP 53: every well-formed A query is answered
+    with the setup AP's own address. A blocking socket polled with a
+    short timeout - plain socket is the portable way to do UDP under
+    uasyncio. If the bind fails (some other build owns 53), the web
+    redirect alone still gets most phones to the page."""
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", 53))
+        sock.settimeout(0.25)
+        log("provisioning DNS catch-all on :53")
+        while True:
+            try:
+                data, addr = sock.recvfrom(512)
+            except OSError:
+                await asyncio.sleep(0.05)
+                continue
+            reply = _dns_reply(data)
+            if reply is not None:
+                try:
+                    sock.sendto(reply, addr)
+                except OSError:
+                    pass
+    except Exception as e:
+        log("provisioning DNS unavailable: %s" % e)
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
+async def _prov_feed_wdt(wdt):
+    """Keep the watchdog fed while setup mode runs: a person standing
+    at the map typing a password must never be rebooted mid-form."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            wdt.feed()
+        except Exception:
+            pass
+
+
+async def _prov_amain(cfg, strip, wdt, count):
+    import network
+    sta = network.WLAN(network.STA_IF)
+    try:
+        sta.active(True)          # stays up so the page can scan
+        sta.disconnect()          # drop any half-finished join: a radio
+    except Exception:             # still retrying one cannot scan, and
+        pass                      # its scans come back empty
+    ap = network.WLAN(network.AP_IF)
+    ap.active(True)
+    try:
+        ap.config(essid=PROV_AP_SSID, authmode=0)   # open network
+    except Exception:
+        ap.config(essid=PROV_AP_SSID)
+    log("setup network '%s' up - join it with a phone and open "
+        "http://%s/ to set this map's Wi-Fi" % (PROV_AP_SSID, PROV_AP_IP))
+    try:
+        strip.show([SETUP_COLOR] * count, 100)
+    except Exception:
+        pass
+    ctx = {"sta": sta, "nets": None}
+    await asyncio.start_server(lambda r, w: _prov_handle(r, w, ctx),
+                               "0.0.0.0", 80)
+    asyncio.create_task(_prov_dns_task())
+    if wdt:
+        asyncio.create_task(_prov_feed_wdt(wdt))
+    while True:
+        await asyncio.sleep(60)
+        if wdt:
+            wdt.feed()
+
+
+def _provisioning(cfg, strip, wdt, count):
+    """Setup mode proper. In practice this never returns - a save
+    ends in a board reset - but any exit or exception is the caller's
+    cue to fall through to the map, offline."""
+    asyncio.run(_prov_amain(cfg, strip, wdt, count))
+
+
+def _sta_connected():
+    try:
+        import network
+        return network.WLAN(network.STA_IF).isconnected()
+    except Exception:
+        return False
+
+
+def _prov_try_join(cfg):
+    """One fresh join attempt with the saved credentials, for the
+    case where boot.py's attempt raced a slow router. True if the
+    station ends up connected."""
+    ssid = cfg.get("wifi_ssid", "") or ""
+    if not ssid or ssid == PROV_PLACEHOLDER_SSID:
+        return False
+    try:
+        import network
+        sta = network.WLAN(network.STA_IF)
+        sta.active(True)
+        if sta.isconnected():
+            return True
+        log("provisioning check: retrying join to '%s'" % ssid)
+        sta.connect(ssid, cfg.get("wifi_password", ""))
+        for _ in range(PROV_JOIN_WAIT_S * 2):
+            if sta.isconnected():
+                log("provisioning check: joined on the retry")
+                return True
+            time.sleep(0.5)
+        try:
+            sta.disconnect()      # stop retrying the dead join, or it
+        except Exception:         # starves the setup page's scans
+            pass
+    except Exception as e:
+        log("provisioning join attempt failed: %s" % e)
+    return False
+
+
+def _prov_boot_held():
+    """One sample of the BOOT button (GPIO0, strapping-safe to read
+    once the app is running). Held = low. Never raises."""
+    try:
+        from machine import Pin
+        return Pin(0, Pin.IN, Pin.PULL_UP).value() == 0
+    except Exception:
+        return False
+
+
+def _prov_boot_requested():
+    """True when BOOT is held through the whole startup window - the
+    deliberate 're-provision this map' gesture. The window is an
+    upper bound, not a tax on every boot: the first released sample
+    answers no at once, and on a board whose button cannot be read
+    this is simply never true."""
+    if not _prov_boot_held():
+        return False
+    deadline = time.ticks_add(time.ticks_ms(), PROV_BOOT_WINDOW_S * 1000)
+    while time.ticks_diff(deadline, time.ticks_ms()) > 0:
+        if not _prov_boot_held():
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def _prov_needed(cfg):
+    """Should this boot go into Wi-Fi setup mode instead of the map?
+    Yes when BOOT was held at startup (which also wipes the saved
+    credentials), when there are no usable credentials, or when the
+    saved network cannot be joined."""
+    if _prov_boot_requested():
+        log("BOOT held at startup - forgetting the saved Wi-Fi")
+        cfg["wifi_ssid"] = ""
+        cfg["wifi_password"] = ""
+        try:
+            save_config(cfg)
+        except Exception as e:
+            log("could not save the wiped Wi-Fi config: %s" % e)
+        return True
+    ssid = cfg.get("wifi_ssid", "") or ""
+    if not ssid or ssid == PROV_PLACEHOLDER_SSID:
+        log("no Wi-Fi credentials in config - setup mode")
+        return True
+    if _sta_connected() or _prov_try_join(cfg):
+        return False
+    log("saved Wi-Fi '%s' would not join - setup mode" % ssid)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 async def _amain(layout, strip, wdt):
@@ -1824,6 +2260,16 @@ def run():
             log("watchdog on (300 s)")
         except Exception as e:
             log("watchdog unavailable: %s" % e)
+    # Wi-Fi setup mode comes before the map: a board with no usable
+    # network serves the captive-portal setup page instead. Setup
+    # normally ends in a reset once credentials are saved; any
+    # failure or unexpected exit here falls through to the map
+    # (offline) rather than leaving a dead board.
+    try:
+        if _prov_needed(cfg):
+            _provisioning(cfg, strip, wdt, len(layout))
+    except Exception as e:
+        log("provisioning error (%s); starting the map offline" % e)
     try:
         asyncio.run(_amain(layout, strip, wdt))
     finally:
