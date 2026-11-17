@@ -834,6 +834,31 @@ def _favicon_png():
     return _favicon_cache
 
 
+# The admin page's own icon (admin UX standard, Nov 16, 2026 -
+# the painter clock v24 pattern): a lit LED grid, the map in
+# miniature - mostly VFR green, the other category colours
+# sprinkled in, one silver no-data dot, on a dark rounded
+# square. One SVG serves both spots: inline beside the title
+# in the page header, and as the tab icon via a data URI
+# derived from the same string, so the pair can never drift.
+# The PNG above stays as the /favicon.ico route's answer for
+# clients that ask for that path directly.
+_ICON_DOTS = ("#00b050", "#00b050", "#2f7bff", "#00b050",
+              "#00b050", "#ff2020", "#00b050", "#00b050",
+              "#c0c0c0", "#00b050", "#e600e6", "#00b050",
+              "#00b050", "#00b050", "#00b050", "#2f7bff")
+ICON_SVG = ("<svg xmlns='http://www.w3.org/2000/svg' "
+            "viewBox='0 0 32 32'>"
+            "<rect x='1' y='1' width='30' height='30' rx='6' "
+            "fill='#223140'/>" + "".join(
+                "<circle cx='%d' cy='%d' r='2.5' fill='%s'/>"
+                % (7 + 6 * (i % 4), 7 + 6 * (i // 4), c)
+                for i, c in enumerate(_ICON_DOTS)) + "</svg>")
+ICON_URI = ("data:image/svg+xml;utf8,"
+            + ICON_SVG.replace("#", "%23").replace("<", "%3C")
+            .replace(">", "%3E"))
+
+
 _WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
              "Saturday", "Sunday")
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -1094,21 +1119,51 @@ def _multipart_file(body, boundary, field):
     return None
 
 
-def _notice(title, detail_html):
-    return ("<html><body style=\"font-family:sans-serif\">"
-            "<h2>%s</h2><p>%s</p></body></html>"
-            % (title, detail_html)).encode()
+def _refresh_page(title, detail, delay):
+    """The rebooting actions' answer (admin UX standard, Nov 16,
+    2026 - the painter clock v24 pattern): a minimal page that
+    sends the browser back to the admin page once the board is
+    up again (meta refresh), with a manual link if it stalls.
+    The flow ends on the admin page, never a dead end."""
+    return ("<html><head><meta http-equiv=\"refresh\" "
+            "content=\"%d;url=/\"></head>"
+            "<body style=\"font-family:sans-serif\">"
+            "<h2>%s</h2><p>%s This page reloads the admin page "
+            "by itself in about %d seconds; if it doesn't, "
+            "<a href=\"/\">tap here</a>.</p></body></html>"
+            % (delay, title, detail, delay)).encode()
+
+
+async def _send_admin(writer, cfg, msg="", msg_err=False):
+    """Answer an action with the admin page itself, wearing a
+    small status note - no redirect, no landing page (the same
+    standard)."""
+    data = _render_page(cfg, msg, msg_err).encode()
+    writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+                 b"Content-Length: %d\r\n\r\n" % len(data))
+    writer.write(data)
+    await writer.drain()
 
 
 _PAGE_HEAD = """<!DOCTYPE html><html><head><title>%%TITLE%%</title>
-<link rel="icon" type="image/png" href="data:image/png;base64,%%FAVICON_B64%%">
+<link rel="icon" href="%%ICON_URI%%">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 body { font-family: sans-serif; max-width: 34em; margin: 1em auto; padding: 0 1em; }
 .status { background: #f0f0f0; padding: 0.8em 1em; border-radius: 6px; }
 .status p { margin: 0.35em 0; }
-details.section { margin: 0.2em 0; }
 summary { cursor: pointer; }
+.msg { background: #efe; border: 1px solid #9c9; padding: 6px 8px; border-radius: 4px; }
+.msg.err { background: #fdeaea; border-color: #d99; }
+input[type=range] { width: 230px; max-width: 60%; vertical-align: middle; }
+.val { display: inline-block; min-width: 2.2em; font-weight: bold; }
+#hdr svg { width: 52px; height: 52px; }
+.sec { border-radius: 6px; padding: 0.8em 1em; margin: 0.9em 0; }
+.sec-status { background: #e9f1fd; }
+.sec-builder { background: #e7f6ec; }
+.sec-power { background: #fdeaea; }
+.sec-settings { background: #e2f5f7; }
+.sec-stations { background: #fff6d9; }
 .row { display: flex; gap: 1em; flex-wrap: wrap; }
 .sta-grid { display: flex; flex-wrap: wrap; gap: 0.4em 1.1em; margin-top: 0.6em; }
 .sta .dot { display: inline-block; width: 0.72em; height: 0.72em;
@@ -1132,11 +1187,13 @@ summary { cursor: pointer; }
 """
 
 _PAGE_BODY = """
-<div style="display:flex;align-items:center;gap:0.6em;margin-bottom:0.8em">
-<img src="data:image/png;base64,%%FAVICON_B64%%" alt="" width="52" height="52" style="border-radius:8px">
+<div id="hdr" style="display:flex;align-items:center;gap:0.6em;margin-bottom:0.8em">
+%%ICON_SVG%%
 <h2 style="margin:0">LS Lite Micro%%HEADING_NAME%%</h2>
 </div>
-<div class="status">
+%%MSG%%
+<div class="status sec sec-status">
+<h2 style="margin:0 0 0.4em">Status</h2>
 <div id="st-offline" style="%%OFFLINE_STYLE%%color:#fff;background:#b00;padding:0.5em 0.6em;border-radius:4px;margin-bottom:0.5em">
 <p style="margin:0;font-weight:bold">&#9888; Board Not Running</p>
 <p id="st-offline-detail" style="margin:0.2em 0 0">%%OFFLINE_DETAIL%%</p>
@@ -1159,8 +1216,7 @@ _PAGE_BODY = """
 <p id="st-upfailed" style="color:#b00;margin:0.3em 0;%%UPFAILED_STYLE%%">%%UPFAILED%%</p>
 </div>
 </div>
-<hr>
-<details class="section" id="sec-builder"%%BUILDER_OPEN%%>
+<details class="section sec sec-builder" id="sec-builder"%%BUILDER_OPEN%%>
 <summary style="margin-top:1em"><h2 style="display:inline;margin:0">Map Builder</h2></summary>
 <p style="color:#555;margin:0.2em 0 0">Light one LED on the string, look at
   where it sits on the map, and type the airport that belongs there - no more
@@ -1222,24 +1278,22 @@ _PAGE_BODY = """
      reboots to load it. Your previous list is kept as airports.bak.</p>
 </form>
 </details>
-<hr>
-<details class="section" id="sec-power">
+<details class="section sec sec-power" id="sec-power">
 <summary style="margin-top:1em"><h2 style="display:inline;margin:0">Power</h2></summary>
 <div class="row">
 <form method="post" action="/toggle"><p><button type="submit">%%TOGGLE_LABEL%%</button></p></form>
 <form method="post" action="/reboot" onsubmit="return confirm('Reboot the board now?')"><p><button type="submit">Reboot board</button></p></form>
 </div>
 </details>
-<hr>
-<details class="section" id="sec-settings">
+<details class="section sec sec-settings" id="sec-settings">
 <summary style="margin-top:1em"><h2 style="display:inline;margin:0">Settings</h2></summary>
 <form method="post" action="/save">
 <p>Map name (shown above, optional): <input name="map_name" value="%%MAP_NAME%%"></p>
-<p>Brightness (0-100%): <input name="brightness" type="number" min="0" max="100" value="%%BRIGHTNESS%%"></p>
+<p>Brightness (0-100%): <input type="range" name="brightness" min="0" max="100" value="%%BRIGHTNESS%%" oninput="document.getElementById('v_brightness').textContent=this.value"> <span class="val" id="v_brightness">%%BRIGHTNESS%%</span></p>
 <p><label><input name="night_mode" type="checkbox" %%NIGHT_CHK%%> Night mode</label>
 dim from <input name="night_start" size="5" value="%%NIGHT_START%%">
 to <input name="night_end" size="5" value="%%NIGHT_END%%"><br>
-Night brightness: <input name="night_brightness" type="number" min="0" max="100" value="%%NIGHT_BRIGHTNESS%%">% of normal (0 = off overnight)</p>
+Night brightness: <input type="range" name="night_brightness" min="0" max="100" value="%%NIGHT_BRIGHTNESS%%" oninput="document.getElementById('v_night_brightness').textContent=this.value"> <span class="val" id="v_night_brightness">%%NIGHT_BRIGHTNESS%%</span>% of normal (0 = off overnight)</p>
 <p><label><input name="high_wind" type="checkbox" %%WIND_CHK%%> High-wind blink (&ge;15 kt)</label></p>
 <p><label><input name="lightning" type="checkbox" %%LTNG_CHK%%> Lightning flash</label></p>
 <p><label><input name="use_wipe" type="checkbox" %%WIPE_CHK%%> Use wipe (each update blanks the string briefly, then sweeps in the new data)</label></p>
@@ -1252,8 +1306,7 @@ Wi-Fi password: <input name="wifi_password" type="password" placeholder="(unchan
 <p style="color:#666">Display settings apply on the next cycle. Wi-Fi and
 GPIO changes apply after a reboot.</p>
 </details>
-<hr>
-<details class="section" id="sec-stations">
+<details class="section sec sec-stations" id="sec-stations">
 <summary style="margin-top:1em"><h2 style="display:inline;margin:0">Stations</h2></summary>
 <p style="color:#555;margin:0.2em 0 0">Every airport on the map with its
 current flight-category color. Hover or tap an airport ID to see its
@@ -1395,7 +1448,7 @@ def _builder_neighbors(entries, pos):
             + "</p>")
 
 
-def _render_page(cfg):
+def _render_page(cfg, msg="", msg_err=False):
     sd = _status_dict(cfg)
     name = cfg.get("map_name", "") or ""
     title = (name + " - " if name else "") + "LS Lite Micro"
@@ -1407,7 +1460,10 @@ def _render_page(cfg):
     b_err = BUILDER["error"]
     BUILDER["error"] = ""       # shown once, on this render
     repl = {
-        "%%FAVICON_B64%%": FAVICON_B64,
+        "%%ICON_SVG%%": ICON_SVG,
+        "%%MSG%%": ('<p class="msg%s">%s</p>'
+                    % (" err" if msg_err else "", _esc(msg)))
+                   if msg else "",
         "%%HEADING_NAME%%": (" &mdash; " + _esc(name)) if name else "",
         "%%MAP_STATE%%": "ON" if sd["map_on"] else "OFF",
         "%%TOGGLE_LABEL%%": "Turn map OFF" if sd["map_on"] else "Turn map ON",
@@ -1464,7 +1520,7 @@ def _render_page(cfg):
     for token, value in repl.items():
         body = body.replace(token, value)
     return (_PAGE_HEAD.replace("%%TITLE%%", _esc(title))
-            .replace("%%FAVICON_B64%%", FAVICON_B64)
+            .replace("%%ICON_URI%%", ICON_URI)
             + body + _PAGE_SCRIPTS)
 
 
@@ -1589,32 +1645,30 @@ async def _handle_client(reader, writer):
         if method == "POST" and path == "/reboot":
             global FORCE_OFF
             FORCE_OFF = True   # display loop blanks the strip within a frame
-            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
-                         b"<html><body style=\"font-family:sans-serif\">"
-                         b"<h2>Rebooting...</h2><p>The map will be back "
-                         b"in a few seconds; reload this page then.</p>"
-                         b"</body></html>")
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n")
+            writer.write(_refresh_page(
+                "Rebooting...",
+                "The map will be back shortly - it rejoins Wi-Fi "
+                "and blinks its address before the page answers.",
+                40))
             await writer.drain()
             asyncio.create_task(_reset_later())
             return
         if method == "POST" and path == "/update-apply":
-            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
-                         b"<html><head><meta http-equiv=\"refresh\" "
-                         b"content=\"25;url=/\"></head>"
-                         b"<body style=\"font-family:sans-serif\">"
-                         b"<h2>Updating...</h2><p>The board is downloading "
-                         b"the new code from GitHub and will reboot. This "
-                         b"page reloads itself in 25 seconds.</p>"
-                         b"</body></html>")
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n")
+            writer.write(_refresh_page(
+                "Updating...",
+                "The board is downloading the new code from GitHub "
+                "and will reboot.", 25))
             await writer.drain()
             asyncio.create_task(_apply_update())
             return
         if method == "POST" and path == "/toggle":
             cfg["map_on"] = not cfg.get("map_on", True)
             save_config(cfg)
-            writer.write(b"HTTP/1.1 303 See Other\r\nLocation: /\r\n"
-                         b"Content-Length: 0\r\n\r\n")
-            await writer.drain()
+            await _send_admin(writer, cfg,
+                              "Map turned off." if not cfg["map_on"]
+                              else "Map turned on.")
             return
         if method == "POST" and path == "/upload-airports":
             body = b""
@@ -1633,13 +1687,8 @@ async def _handle_client(reader, writer):
                    if boundary else None)
             entries, err = _parse_airports_upload(raw)
             if err:
-                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: "
-                             b"text/html\r\n\r\n")
-                writer.write(_notice(
-                    "Upload not accepted",
-                    _esc(err) + ' <a href="/">Back to the '
-                    'settings page</a>'))
-                await writer.drain()
+                await _send_admin(writer, cfg,
+                                  "Upload not accepted: " + err, True)
                 return
             _save_airports(entries)
             if _LIVE["entries"] is not None:
@@ -1648,11 +1697,10 @@ async def _handle_client(reader, writer):
             _save_builder()
             writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: "
                          b"text/html\r\n\r\n")
-            writer.write(_notice(
+            writer.write(_refresh_page(
                 "Airports list updated",
                 "%d positions saved. The board is rebooting to load "
-                "the new list; reload this page in a few seconds."
-                % len(entries)))
+                "the new list." % len(entries), 40))
             await writer.drain()
             asyncio.create_task(_reset_later())
             return
@@ -1712,9 +1760,7 @@ async def _handle_client(reader, writer):
                     _save_airports(entries)
                     BUILDER["active"] = True  # keep the light on it
             _save_builder()
-            writer.write(b"HTTP/1.1 303 See Other\r\nLocation: /\r\n"
-                         b"Content-Length: 0\r\n\r\n")
-            await writer.drain()
+            await _send_admin(writer, cfg)
             return
         if method == "POST" and path == "/save":
             body = b""
@@ -1743,9 +1789,7 @@ async def _handle_client(reader, writer):
             if form.get("wifi_password"):
                 cfg["wifi_password"] = form["wifi_password"]
             save_config(cfg)
-            writer.write(b"HTTP/1.1 303 See Other\r\nLocation: /\r\n"
-                         b"Content-Length: 0\r\n\r\n")
-            await writer.drain()
+            await _send_admin(writer, cfg, "Settings saved.")
             return
         data = _render_page(cfg).encode()
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
