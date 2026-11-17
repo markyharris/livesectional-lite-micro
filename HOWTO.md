@@ -349,6 +349,22 @@ find the board in your router's connected-devices list — it shows as
 an Espressif device with the MAC address shown when you flashed it
 in Step 3).
 
+The map also tells you the address itself, two ways. If you set the
+Wi-Fi from the board's own setup page (the **LSLite-Micro-Setup**
+network it hosts when it has no usable credentials — hold the BOOT
+button just after power-up to force it and forget the old network),
+a save that works
+ends on a completion page showing the admin address, held for about
+45 seconds before the board restarts: write it down then. (A save
+whose join fails just returns to the form — nothing is stored, so a
+wrong password can't strand the map.) And after every power-up,
+before the weather appears, the first LED blinks the last part of
+the address: count the blinks digit by digit — **white** blinks are
+the first digit, **amber** the second, **violet** the third, and
+one long blink means 0 — three times through. Your network supplies
+the first part (usually 192.168.0. or 192.168.1. — the console line
+and your router's list agree), the blinks supply the rest.
+
 On the page:
 
 1. **Status box** (always visible): whether the map is on, when it
@@ -499,6 +515,7 @@ stage; `[metar-micro]` is the application.
 | Worked yesterday, dead after a power outage | Board booted before the router finished booting | Press **RST** (or your frame reset button) once the router is back |
 | Boot loop printing `invalid header: 0xffffffff` | The firmware didn't land where the chip looks for it — classically an old (3.x) Thonny installer, which writes this chip at the wrong address while reporting success | Check Thonny's version (Help → About): upgrade to 4.1+ and reflash per Step 3, or use Step 3's manual esptool commands |
 | `[boot] Wi-Fi join failed` | Wrong SSID/password, or a 5 GHz-only network name | Check `config.json` credentials; use a 2.4 GHz SSID |
+| Map moved to a new home / new router | The saved network is gone, so the board hosts its setup network instead | Join **LSLite-Micro-Setup** with a phone and use the setup page (or hold BOOT just after power-up to force setup mode); a successful save shows the new admin address for ~45 s before the restart, and the first LED blinks the address's last number after every power-up |
 | VFR shows red, IFR shows green | Strip is RGB color order | Settings → **Color order** → RGB, Save |
 | Every LED silver (dim white) | No weather data — fetch failing, or the IDs in `airports` don't match real station IDs | Check the console for `fetch ok` vs `fetch failed`; fix IDs to match the METAR data |
 | Red **Board Not Running** banner in the status box | The board is alive (the page loaded) but weather data has stopped: 3 failed fetches in a row, or 20 minutes with no new data | Read the banner's last-error line: a network error points at Wi-Fi/internet, an HTTP error at the weather server. Fetches keep retrying every 5 minutes and the banner clears on its own once data flows again |

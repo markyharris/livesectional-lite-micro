@@ -105,6 +105,29 @@ PROV_PLACEHOLDER_SSID = "YOUR_WIFI_NAME"   # as shipped in config.json
 PROV_JOIN_WAIT_S = 15        # one fresh join attempt before setup mode
 PROV_BOOT_WINDOW_S = 3       # BOOT-hold sample window at run() start
 SETUP_COLOR = (0, 0, 48)     # steady dim blue: "waiting for Wi-Fi setup"
+PROV_DONE_HOLD_S = 45        # the completion page stays up this long
+                             # before the reboot, so the admin address
+                             # on it can be read and written down
+
+# The blink code (standing rule, Nov 16, 2026: a connected device
+# says where its admin page lives - a strip map has no screen, so it
+# says it in light). After a boot-time join, before the first weather
+# frame, one LED blinks the last octet of the board's IP address,
+# digit by digit: a digit is that many short blinks, zero is one
+# long blink, and each digit position has its own colour - white,
+# amber, violet - so the position is unmistakable even mid-sequence.
+# The whole sequence repeats three times, then the LED returns to
+# weather duty. Colours here are logical (R, G, B); the strip's own
+# color_order handling puts them on the wire correctly.
+BLINK_LED_INDEX = 0          # the first LED on the string speaks
+BLINK_COLORS = ((255, 255, 255), (255, 160, 0), (148, 0, 211))
+BLINK_ON_MS = 300            # one short blink
+BLINK_ZERO_MS = 900          # zero: one long blink
+BLINK_GAP_MS = 250           # dark beat between blinks of one digit
+BLINK_DIGIT_GAP_MS = 900     # pause between digits
+BLINK_REPEAT_GAP_MS = 2500   # longer pause between repeats
+BLINK_REPEATS = 3
+BLINK_BRIGHTNESS = 60        # percent: clearly visible, not a glare
 
 # Self-update from GitHub (the board has no git; this is the file-based
 # equivalent of the Pi's pull-and-restart): the admin page checks the
@@ -1445,9 +1468,12 @@ def _render_page(cfg):
             + body + _PAGE_SCRIPTS)
 
 
-async def _reset_later():
-    """Reset the board ~1 s after the reboot response has been sent."""
-    await asyncio.sleep(1)
+async def _reset_later(delay=1):
+    """Reset the board after a pause - ~1 s by default, once the
+    reboot response has been sent. The provisioning completion page
+    passes PROV_DONE_HOLD_S instead, so the admin address it shows
+    can be read and written down before the board goes."""
+    await asyncio.sleep(delay)
     try:
         import machine
         machine.reset()
@@ -1744,9 +1770,14 @@ async def _handle_client(reader, writer):
 # point and serves a setup page, so the Wi-Fi can be entered from a
 # phone. A DNS catch-all answers every lookup with the board's own
 # address, which makes the phone pop the page up by itself, the way a
-# hotel sign-in sheet does. Saving writes only the two Wi-Fi fields
-# of config.json and reboots; the board then joins the new network
-# normally, and boot.py / the render loop never know it happened.
+# hotel sign-in sheet does. Submitting the form does NOT save blind:
+# the board first joins the picked network while the setup point is
+# still up, and only a join that works is written to config.json
+# (only the two Wi-Fi fields, as always). Success serves a
+# completion page naming the board's real admin address, held for
+# PROV_DONE_HOLD_S before the reboot; a failed join returns to the
+# form with the error and nothing saved, so a wrong password can
+# never strand the map on a network it cannot use.
 # ---------------------------------------------------------------------------
 def _prov_clean_scan(raw):
     """Turn wlan.scan() output into the setup page's network list:
@@ -1865,9 +1896,12 @@ button { font-size: 1em; padding: 0.4em 1.2em; }
 %%ERR%%
 <p>This map is not on a Wi-Fi network yet. You are connected to its
 own setup network, <strong>LSLite-Micro-Setup</strong>. Tell it which
-network to join%%FOR%% and that network's password; it saves them, restarts,
-and joins - this setup network then disappears, so reconnect your
-phone to your normal Wi-Fi afterwards.</p>
+network to join%%FOR%% and that network's password. The map tries the
+join straight away: if it works, the next page shows the map's admin
+address - write it down - and the map restarts onto your network
+(this setup network then disappears, so reconnect your phone to your
+normal Wi-Fi afterwards). If the join fails you land back here and
+nothing is saved, so a mistyped password costs nothing.</p>
 <form method="post" action="/save">
 <p><label for="ssid">Network</label><br>
 <select name="ssid" id="ssid">%%OPTIONS%%</select></p>
@@ -1878,7 +1912,7 @@ phone to your normal Wi-Fi afterwards.</p>
 <p><label><input type="checkbox" id="show_pw" style="width:auto"
 onchange="document.getElementById('wifi_password').type = this.checked ? 'text' : 'password'">
 Show password</label></p>
-<p><button type="submit">Save and restart</button></p>
+<p><button type="submit">Save and join</button></p>
 </form>
 <p><a href="/rescan">Rescan for networks</a></p>
 </body></html>"""
@@ -1899,6 +1933,38 @@ def _prov_page(cfg, nets, error=""):
             .replace("%%FOR%%", for_what))
 
 
+_PROV_DONE_PAGE = """<!DOCTYPE html><html><head><title>LS Lite Micro - Connected</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body { font-family: sans-serif; max-width: 34em; margin: 1em auto; padding: 0 1em; }
+.addr { font-size: 1.5em; font-weight: bold; }
+</style></head><body>
+<h2>LS Lite Micro &mdash; Connected</h2>
+<p>The map has joined <strong>%%SSID%%</strong>. Its admin page -
+settings, the station list, updates - is at:</p>
+<p class="addr"><a href="http://%%IP%%/">http://%%IP%%/</a></p>
+<p><strong>Write that address down.</strong> This page stays up for
+about %%HOLD%% seconds while the map restarts onto your network;
+this setup network then disappears, so reconnect your phone to
+<strong>%%SSID%%</strong> and open the address there.</p>
+<p>No paper handy? After every restart the map also blinks the last
+part of the address on its first LED, before the weather appears:
+count the blinks digit by digit - <strong>white</strong> blinks are
+the first digit, <strong>amber</strong> the second,
+<strong>violet</strong> the third, and one long blink means 0. It
+goes through the sequence three times.</p>
+</body></html>"""
+
+
+def _prov_done_page(ssid, ip):
+    """The completion page: proof the join worked, and the one thing
+    the owner needs from it - the board's real admin address, read
+    from the live connection at join time, never assumed."""
+    return (_PROV_DONE_PAGE.replace("%%SSID%%", _esc(ssid))
+            .replace("%%IP%%", _esc(ip))
+            .replace("%%HOLD%%", str(PROV_DONE_HOLD_S))).encode()
+
+
 # Probe paths the phones' connectivity checks ask for, plus the usual
 # sign-in sheet addresses. Every one - and every other unknown path -
 # gets the same 302 to the setup page.
@@ -1915,6 +1981,44 @@ async def _prov_redirect(writer):
     writer.write(b"HTTP/1.1 302 Found\r\nLocation: " + _PROV_HOME
                  + b"\r\nContent-Length: 0\r\n\r\n")
     await writer.drain()
+
+
+async def _prov_try_credentials(sta, ssid, password):
+    """Join the network the user just picked, while the setup access
+    point stays up (AP+STA): success needs the real assigned address
+    for the completion page, and failure must hand the user back to
+    the form - never a save-and-reboot into a bad join. Polls
+    asynchronously, so the setup page and the DNS catch-all keep
+    being served while the join is in flight. Returns (True, ip) on
+    success, (False, "") after PROV_JOIN_WAIT_S."""
+    try:
+        sta.active(True)
+        if sta.isconnected():
+            # A connection during setup can only be an earlier
+            # submit from this same session (the portal starts with
+            # the station disconnected): a double-tap on Save lands
+            # here, and its join already worked.
+            return True, sta.ifconfig()[0]
+        try:
+            sta.disconnect()      # drop any stale retry state first
+        except Exception:
+            pass
+        sta.connect(ssid, password)
+        for _ in range(PROV_JOIN_WAIT_S * 2):
+            if sta.isconnected():
+                ip = sta.ifconfig()[0]
+                log("provisioning: joined '%s', address %s"
+                    % (ssid, ip))
+                return True, ip
+            await asyncio.sleep(0.5)
+        log("provisioning: join to '%s' did not take" % ssid)
+        try:
+            sta.disconnect()      # stop retrying the dead join, or
+        except Exception:         # it starves the setup page's scans
+            pass
+    except Exception as e:
+        log("provisioning join attempt failed: %s" % e)
+    return False, ""
 
 
 async def _prov_handle(reader, writer, ctx):
@@ -1938,6 +2042,18 @@ async def _prov_handle(reader, writer, ctx):
             if h.lower().startswith(b"content-length:"):
                 length = int(h.split(b":")[1])
         if method == "GET" and path in ("/", "/rescan"):
+            done = ctx.get("done")
+            if done:
+                # The join already succeeded: for the rest of the
+                # hold, whatever the phone asks for gets the
+                # completion page again - the address is the point.
+                data = _prov_done_page(done[0], done[1])
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: "
+                             b"text/html\r\nContent-Length: %d\r\n\r\n"
+                             % len(data))
+                writer.write(data)
+                await writer.drain()
+                return
             nets = ctx["nets"]
             if path == "/rescan" or nets is None:
                 nets = _prov_scan(ctx["sta"])
@@ -1967,16 +2083,35 @@ async def _prov_handle(reader, writer, ctx):
                 writer.write(data)
                 await writer.drain()
                 return
+            # Prove the join before saving anything: the station
+            # joins the picked network while this setup point stays
+            # up, so success can show the real assigned address and
+            # failure can hand the form straight back - a wrong
+            # password is never saved, and the board never reboots
+            # into a network it cannot use.
+            ok, ip = await _prov_try_credentials(ctx["sta"], ssid,
+                                                 password)
+            if not ok:
+                data = _prov_page(
+                    load_config(), ctx["nets"] or [],
+                    "That network would not join - check the name "
+                    "and password and try again. Nothing was "
+                    "saved.").encode()
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: "
+                             b"text/html\r\nContent-Length: %d\r\n\r\n"
+                             % len(data))
+                writer.write(data)
+                await writer.drain()
+                return
             _prov_apply(ssid, password)
+            ctx["done"] = (ssid, ip)
+            data = _prov_done_page(ssid, ip)
             writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: "
-                         b"text/html\r\n\r\n")
-            writer.write(_notice(
-                "Wi-Fi saved",
-                "The map will restart and join <strong>%s</strong>. "
-                "Give it a few seconds, then look for it on that "
-                "network." % _esc(ssid)))
+                         b"text/html\r\nContent-Length: %d\r\n\r\n"
+                         % len(data))
+            writer.write(data)
             await writer.drain()
-            asyncio.create_task(_reset_later())
+            asyncio.create_task(_reset_later(PROV_DONE_HOLD_S))
             return
         await _prov_redirect(writer)
     except Exception as e:
@@ -2055,7 +2190,7 @@ async def _prov_amain(cfg, strip, wdt, count):
         strip.show([SETUP_COLOR] * count, 100)
     except Exception:
         pass
-    ctx = {"sta": sta, "nets": None}
+    ctx = {"sta": sta, "nets": None, "done": None}
     await asyncio.start_server(lambda r, w: _prov_handle(r, w, ctx),
                                "0.0.0.0", 80)
     asyncio.create_task(_prov_dns_task())
@@ -2162,6 +2297,87 @@ def _prov_needed(cfg):
 
 
 # ---------------------------------------------------------------------------
+# The blink code: the admin address, spoken in light
+# ---------------------------------------------------------------------------
+def _blink_schedule(ip):
+    """The blink code for an IP address, as a list of (color, ms)
+    events: a color tuple lights the LED for that long, None is a
+    dark pause. Only the last octet is spoken - the owner knows
+    their own network's first three numbers; the last one is the
+    part that changes from board to board. The full sequence
+    repeats BLINK_REPEATS times. An address that does not parse
+    yields no events: silence, never a wrong address."""
+    try:
+        octet = int(ip.split(".")[3])
+    except Exception:
+        return []
+    if octet < 0 or octet > 255:
+        return []
+    digits = []
+    n = octet
+    if n == 0:
+        digits = [0]
+    while n > 0:
+        digits.append(n % 10)
+        n //= 10
+    digits.reverse()
+    events = []
+    for rep in range(BLINK_REPEATS):
+        if rep:
+            events.append((None, BLINK_REPEAT_GAP_MS))
+        for pos in range(len(digits)):
+            if pos:
+                events.append((None, BLINK_DIGIT_GAP_MS))
+            color = BLINK_COLORS[pos % len(BLINK_COLORS)]
+            d = digits[pos]
+            if d == 0:
+                events.append((color, BLINK_ZERO_MS))
+            else:
+                for k in range(d):
+                    if k:
+                        events.append((None, BLINK_GAP_MS))
+                    events.append((color, BLINK_ON_MS))
+            events.append((None, BLINK_GAP_MS))
+    return events
+
+
+def blink_ip(strip, ip, count, wdt=None):
+    """Play the blink code for `ip` on LED BLINK_LED_INDEX. run()
+    calls this once per boot - after the join, before the render
+    loop starts, while the strip is still dark - so it belongs to
+    boot joins only (power-up, the post-setup reboot, the
+    self-updater's reboot); nothing in the running loop calls it,
+    and a mid-run reconnect stays silent. The LED is an ordinary
+    strip position driven through the strip's own show(), so the
+    configured color_order applies and the colours come out true.
+    Never raises: a map that cannot speak its address still has to
+    show the weather."""
+    try:
+        if not ip or ip == "0.0.0.0" or count <= 0:
+            return
+        events = _blink_schedule(ip)
+        if not events:
+            return
+        idx = BLINK_LED_INDEX
+        if idx >= count:
+            idx = 0
+        dark = [OFF] * count
+        for color, ms in events:
+            frame = list(dark)
+            if color is not None:
+                frame[idx] = color
+            strip.show(frame, BLINK_BRIGHTNESS)
+            time.sleep(ms / 1000.0)
+        strip.show(dark, BLINK_BRIGHTNESS)
+        if wdt:
+            wdt.feed()
+        log("blink code: admin page is http://%s/ "
+            "(last octet blinked on LED %d)" % (ip, idx + 1))
+    except Exception as e:
+        log("blink code failed: %s" % e)
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 async def _amain(layout, strip, wdt):
@@ -2262,14 +2478,20 @@ def run():
             log("watchdog unavailable: %s" % e)
     # Wi-Fi setup mode comes before the map: a board with no usable
     # network serves the captive-portal setup page instead. Setup
-    # normally ends in a reset once credentials are saved; any
-    # failure or unexpected exit here falls through to the map
-    # (offline) rather than leaving a dead board.
+    # normally ends in a reset once credentials are saved and the
+    # join is proven; any failure or unexpected exit here falls
+    # through to the map (offline) rather than leaving a dead board.
     try:
         if _prov_needed(cfg):
             _provisioning(cfg, strip, wdt, len(layout))
     except Exception as e:
         log("provisioning error (%s); starting the map offline" % e)
+    # The boot join is up (setup mode, had it run, ended in a reset,
+    # so reaching here connected means this boot joined): speak the
+    # admin address in the blink code before the first weather
+    # frame, while the strip is still dark.
+    if _sta_connected():
+        blink_ip(strip, _board_ip(), len(layout), wdt)
     try:
         asyncio.run(_amain(layout, strip, wdt))
     finally:

@@ -26,6 +26,33 @@ discarded. Peak memory is one network chunk plus one METAR block. If a
 fetch fails, the map keeps showing the previous frame — it never blanks
 and never crashes (a 5-minute watchdog also reboots a wedged board).
 
+## Wi-Fi setup mode — and how the map says its address
+
+A map with no usable network — fresh out of the box, moved to a new
+home, or with BOOT held just after power-up (which forgets the saved
+credentials) — hosts its own open network, **LSLite-Micro-Setup**,
+and serves a setup page; the strip sits steady dim blue while it
+waits. Saving there does not reboot blind: the board joins the
+network you picked *while the setup page is still up*, and only a
+join that works is saved. Success serves a completion page naming
+the board's real admin address (`http://<board-ip>/`), held for
+~45 seconds so it can be written down before the board restarts
+onto the new network. A failed join returns to the form with the
+error and nothing saved, so a mistyped password can never strand
+the map on a network it cannot use.
+
+The board also speaks its address in light. After every boot-time
+join, before the first weather frame, the first LED blinks the last
+octet of the IP address, digit by digit: a digit is that many short
+blinks, zero is one long blink, and each digit position has its own
+color — white for the first digit, amber for the second, violet for
+the third — so the position is unmistakable even mid-sequence.
+`.46` is four white blinks, a pause, six amber ones. The sequence
+repeats three times, then the LED goes back to weather duty. (Only
+the last octet is spoken: the first three numbers are your own
+network's, and the last one is the part that changes from board to
+board.)
+
 Colors are the standard LiveSectional scheme: VFR green, MVFR blue, IFR
 red, LIFR magenta, and dim white ("silver") for a station that isn't
 reporting. If a report has no `flight_category`, it is computed from
@@ -190,3 +217,11 @@ frame logic are shared pure Python:
   hardware-proven path above.
 - The HTTP chunked-transfer decoder and the CPython zlib stand-in for
   `deflate.DeflateIO` both round-trip test data byte-for-byte.
+- In this repo, `test_provisioning.py` covers the setup-mode pieces
+  (scan cleanup, the DNS catch-all, form validation) and
+  `test_address.py` covers the address features: the completion-page
+  flow driven through the real portal handler with a fake station
+  (success saves and shows the assigned address; failure saves
+  nothing and the portal stays up), and the blink code's exact
+  blink/colour/pause schedule read back from recorded LED writes
+  for .24, .8, .108 and .213.
