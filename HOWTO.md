@@ -421,6 +421,14 @@ The page is organized in collapsible sections (click a section title
 to open or close it; your browser remembers which you left open). The
 status box on top is always visible.
 
+The five sections are colour-tinted — Status blue, Map Builder
+green, Power soft red, Settings teal, Stations warm yellow — and a
+4×4 grid of lit LEDs is the page's icon, in the browser tab and
+beside the title. In **Settings**, **Brightness** and **Night
+brightness** are sliders with live readouts; the rest are plain
+fields. Every action (Save, Reboot, Update) lands back on this
+page — there are no dead-end confirmation screens.
+
 ### The Map Builder (entering your airports without counting)
 
 Building a layout by counting LEDs along a string is miserable. The
